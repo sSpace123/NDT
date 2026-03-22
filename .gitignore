@@ -1,0 +1,25 @@
+# 数据文件
+*.csv
+
+# 模型检查点
+checkpoints/
+*.pt
+
+# 图片输出
+plots/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# 系统文件
+Thumbs.db
+.DS_Store
