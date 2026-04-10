@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # GNN-SHM: 基于图神经网络和物理约束的损伤定位系统
 
 > 适用于**变厚度扭转结构**中基于超声导波 (Lamb Wave) 的复杂损伤定位问题
@@ -30,18 +29,26 @@ gnn_shm/
 
 ### 方式一：使用 uv（推荐）
 
+**需要在项目根目录 `gnn_shm/` 下操作：**
+
 ```bash
 cd gnn_shm
 uv venv
-# Windows:
-.venv\Scripts\activate
-# Linux/Mac:
-source .venv/bin/activate
-
 uv pip install -r requirements.txt
 ```
 
-### 方式二：使用 pip
+### 方式二：在父目录创建环境 (适用于 VS Code 自动检测)
+
+如果你的 VS Code 工作区根目录是 `模拟损伤/`（而非 `gnn_shm/`），VS Code 会在
+工作区根目录寻找 `.venv`。此时需要在**父目录**也创建虚拟环境：
+
+```powershell
+cd "d:\桌面\发动机风扇\模拟损伤"
+uv venv
+uv pip install -r gnn_shm\requirements.txt
+```
+
+### 方式三：使用 pip
 
 ```bash
 cd gnn_shm
@@ -55,7 +62,19 @@ pip install -r requirements.txt
 使用合成数据快速验证整个训练流水线（无需真实数据）：
 
 ```bash
+cd gnn_shm
 python train.py --demo --epochs 5
+```
+
+如果你的工作目录是父目录 `模拟损伤/`，则需要指定脚本路径：
+
+```powershell
+# 方式 A: 先激活虚拟环境
+.venv\Scripts\activate
+python gnn_shm\train.py --demo --epochs 5
+
+# 方式 B: 直接用绝对路径
+& ".venv\Scripts\python.exe" gnn_shm\train.py --demo --epochs 5
 ```
 
 该命令会：
@@ -126,8 +145,3 @@ python train.py --epochs 200 --lr 1e-3 --batch_size 4
 ## License
 
 MIT
-=======
-# NDT
-发动机涡轮叶片变厚度无损检测
-//test
->>>>>>> 20bf0442b9ac059a2ab256e23d75ed0a15abda8c
