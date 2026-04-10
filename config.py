@@ -1,3 +1,4 @@
+import os
 import numpy as np
 
 # ========================================
@@ -44,11 +45,13 @@ def denormalize_coord(norm_coord):
 
 
 # ========================================
-# 2. 数据处理配置
+# 2. 数据处理配置 — 动态绝对路径
 # ========================================
 
-# 数据根目录: gnn_shm 的上级目录 (即 模拟损伤/)
-DATA_ROOT = ".."
+# config.py 所在目录 = gnn_shm/，其父目录 = 模拟损伤/ (包含中文子文件夹)
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_ROOT = os.path.dirname(_THIS_DIR)
+
 # 区域子目录名: 与 REGION_NAMES 索引一一对应
 REGION_DIRS = ["左上", "上", "右上", "左中", "中", "右中", "左下", "下", "右下"]
 
@@ -83,4 +86,4 @@ SCALE_RANGE = (0.8, 1.2)
 TIME_SHIFT_MAX = 50
 SEED = 42
 
-SAVE_DIR = "outputs"
+SAVE_DIR = os.path.join(_THIS_DIR, "outputs")

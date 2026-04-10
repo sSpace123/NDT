@@ -73,7 +73,7 @@ def preprocess_pair(healthy_csv, damage_csv):
     单条路径的完整 Pipeline: 读取 → 差分 → 滤波 → 去噪 → 包络 → 窗口裁剪 → CWT
     返回: [4, 32, 2048]
     """
-    # 读取 CSV
+    # 读取 CSV —— 使用 pd.to_numeric 强制清洗非数值字符
     try:
         base_df = pd.read_csv(healthy_csv, skiprows=CSV_HEADER_LINES,
                               usecols=[1, 2], names=["excitation", "response"])
@@ -87,7 +87,11 @@ def preprocess_pair(healthy_csv, damage_csv):
         base_df = pd.DataFrame(base_data, columns=["excitation", "response"])
         dmg_df = pd.DataFrame(dmg_data, columns=["excitation", "response"])
 
-    # 截断到共同长度 & 清洗异常值 (示波器溢出会产生 inf)
+    # 强制转换 + 清洗: 非数值字符 → NaN → 0.0, inf → 0.0
+    for col in ["excitation", "response"]:
+        base_df[col] = pd.to_numeric(base_df[col], errors='coerce')
+        dmg_df[col] = pd.to_numeric(dmg_df[col], errors='coerce')
+
     min_len = min(len(base_df), len(dmg_df))
     base_exc = np.nan_to_num(base_df["excitation"].values[:min_len], nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
     base_resp = np.nan_to_num(base_df["response"].values[:min_len], nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
@@ -129,31 +133,33 @@ def preprocess_pair(healthy_csv, damage_csv):
         _get_cwt(_crop_pad(env_resp)),
     ], axis=0).astype(np.float32)
 
-    return tensor_cwt
+    # 最终防线: 保证输出 100% 有限
+    return np.nan_to_num(tensor_cwt, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 # ========================================
-# 数据目录扫描
+# 数据目录扫描 (硬失败, 无 dummy)
 # ========================================
 
 def build_sample_index(data_root=DATA_ROOT):
     """扫描 data_root 下各区域子目录, 返回 [(region_idx, tag, dmg_files, healthy_files), ...]"""
-    samples = []
-    if not os.path.exists(data_root):
-        print(f"[WARN] DATA_ROOT '{data_root}' not found.")
-        return samples
+    abs_root = os.path.abspath(data_root)
+    if not os.path.exists(abs_root):
+        raise RuntimeError(
+            f"[FATAL] DATA_ROOT 不存在: '{abs_root}'\n"
+            f"  请检查 config.py 中 DATA_ROOT 的配置, 当前值基于 __file__ 自动推导。"
+        )
 
+    samples = []
     for ri, rd in enumerate(REGION_DIRS):
-        dp = os.path.join(data_root, rd)
+        dp = os.path.join(abs_root, rd)
         if not os.path.isdir(dp):
             continue
-        # 收集所有 tag
         tags = set()
         for f in glob.glob(os.path.join(dp, "tek*ALL*.csv")):
             m = re.search(r"ALL(\w+)\.csv", os.path.basename(f))
             if m:
                 tags.add(m.group(1))
-        # 健康基线文件
         healthy = [os.path.join(dp, f"tek{i:04d}ALLno.csv") for i in range(NUM_PAIRS)]
         if not all(os.path.isfile(f) for f in healthy):
             continue
@@ -167,7 +173,7 @@ def build_sample_index(data_root=DATA_ROOT):
 
 
 # ========================================
-# Dataset
+# Dataset (无 dummy 模式)
 # ========================================
 
 class NDTDataset(Dataset):
@@ -178,58 +184,46 @@ class NDTDataset(Dataset):
     - region_idx: scalar  0~8
     """
 
-    def __init__(self, sample_index, mode="train", global_stats=None, is_dummy=False):
+    def __init__(self, sample_index, mode="train", global_stats=None):
         self.samples = sample_index
         self.mode = mode
         self.repeat = AUGMENT_REPEAT if mode == "train" else 1
-        self.is_dummy = is_dummy
 
         # --- 预处理并缓存 ---
         self.data_cache = {}
-        if not is_dummy:
-            print(f"  [{mode}] {len(sample_index)} 样本, 提取 {NUM_BIPARTITE_EDGES} 条边 CWT 特征...")
-            for idx, (ri, tag, dmg_files, healthy_files) in enumerate(self.samples):
-                signals = np.stack([
-                    preprocess_pair(healthy_files[pi], dmg_files[pi])
-                    for pi in BIPARTITE_INDICES
-                ], axis=0)  # [36, 4, 32, 2048]
-                self.data_cache[idx] = np.nan_to_num(signals, nan=0.0, posinf=0.0, neginf=0.0)
+        print(f"  [{mode}] {len(sample_index)} samples, extracting {NUM_BIPARTITE_EDGES}-edge CWT...")
+        for idx, (ri, tag, dmg_files, healthy_files) in enumerate(self.samples):
+            signals = np.stack([
+                preprocess_pair(healthy_files[pi], dmg_files[pi])
+                for pi in BIPARTITE_INDICES
+            ], axis=0)  # [36, 4, 32, 2048]
+            self.data_cache[idx] = np.nan_to_num(signals, nan=0.0, posinf=0.0, neginf=0.0)
 
         # --- 全局 Z-score 归一化 ---
         if global_stats is not None:
             self.global_mean, self.global_std = global_stats
-        elif not is_dummy and mode == "train" and len(self.samples) > 0:
+        elif mode == "train" and len(self.samples) > 0:
             all_data = np.stack(list(self.data_cache.values()))  # [N, 36, 4, 32, 2048]
             self.global_mean = np.mean(all_data, axis=(0, 1, 3, 4), keepdims=False)  # [4]
-            self.global_std = np.std(all_data, axis=(0, 1, 3, 4), keepdims=False) + 1e-8  # [4]
-            print(f"  全局统计: mean={self.global_mean}, std={self.global_std}")
+            self.global_std = np.std(all_data, axis=(0, 1, 3, 4), keepdims=False) + 1e-8
         else:
             self.global_mean = np.zeros(IN_CHANNELS, dtype=np.float32)
             self.global_std = np.ones(IN_CHANNELS, dtype=np.float32)
 
         # 应用归一化
-        if not is_dummy:
-            mean = self.global_mean[np.newaxis, :, np.newaxis, np.newaxis]  # [1, 4, 1, 1]
-            std = self.global_std[np.newaxis, :, np.newaxis, np.newaxis]
-            for idx in range(len(self.samples)):
-                normed = (self.data_cache[idx] - mean) / std
-                self.data_cache[idx] = np.clip(normed, -10, 10).astype(np.float32)
+        mean = self.global_mean[np.newaxis, :, np.newaxis, np.newaxis]  # [1, 4, 1, 1]
+        std = self.global_std[np.newaxis, :, np.newaxis, np.newaxis]
+        for idx in range(len(self.samples)):
+            normed = (self.data_cache[idx] - mean) / std
+            self.data_cache[idx] = np.clip(normed, -10, 10).astype(np.float32)
 
         # --- 标签 ---
         self.labels = []
-        if not is_dummy:
-            for ri, tag, _, _ in self.samples:
-                self.labels.append({
-                    "region_idx": ri,
-                    "center_norm": normalize_coord(REGION_CENTERS[ri]),
-                })
-        else:
-            rng = np.random.RandomState(SEED)
-            for _ in range(len(self.samples)):
-                self.labels.append({
-                    "region_idx": rng.randint(0, NUM_CLASSES),
-                    "center_norm": normalize_coord(rng.normal(0, 50, 2)),
-                })
+        for ri, tag, _, _ in self.samples:
+            self.labels.append({
+                "region_idx": ri,
+                "center_norm": normalize_coord(REGION_CENTERS[ri]),
+            })
 
     def get_global_stats(self):
         return (self.global_mean, self.global_std)
@@ -239,33 +233,28 @@ class NDTDataset(Dataset):
 
     def __getitem__(self, idx):
         real_idx = idx % len(self.samples)
+        selected = self.data_cache[real_idx].copy()
 
-        if self.is_dummy:
-            selected = np.random.randn(NUM_BIPARTITE_EDGES, IN_CHANNELS, 32,
-                                       WINDOW_HALF_SIZE * 2).astype(np.float32) * 0.1
-        else:
-            selected = self.data_cache[real_idx].copy()
+        if self.mode == "train":
+            # 传感器 Dropout: mask 1~3 条边
+            if np.random.rand() < 0.5:
+                drop = np.random.choice(NUM_BIPARTITE_EDGES,
+                                        np.random.randint(1, 4), replace=False)
+                selected[drop] = 0.0
 
-            if self.mode == "train":
-                # 传感器 Dropout: mask 1~3 条边
-                if np.random.rand() < 0.5:
-                    drop = np.random.choice(NUM_BIPARTITE_EDGES,
-                                            np.random.randint(1, 4), replace=False)
-                    selected[drop] = 0.0
+            # 物理微扰: 时移 + 幅度缩放 + 噪声
+            if np.random.rand() < 0.5:
+                shift = np.random.randint(-TIME_SHIFT_MAX, TIME_SHIFT_MAX + 1)
+                if shift > 0:
+                    selected[:, :, :, shift:] = selected[:, :, :, :-shift].copy()
+                    selected[:, :, :, :shift] = 0
+                elif shift < 0:
+                    sa = abs(shift)
+                    selected[:, :, :, :-sa] = selected[:, :, :, sa:].copy()
+                    selected[:, :, :, -sa:] = 0
 
-                # 物理微扰: 时移 + 幅度缩放 + 噪声
-                if np.random.rand() < 0.5:
-                    shift = np.random.randint(-TIME_SHIFT_MAX, TIME_SHIFT_MAX + 1)
-                    if shift > 0:
-                        selected[:, :, :, shift:] = selected[:, :, :, :-shift].copy()
-                        selected[:, :, :, :shift] = 0
-                    elif shift < 0:
-                        sa = abs(shift)
-                        selected[:, :, :, :-sa] = selected[:, :, :, sa:].copy()
-                        selected[:, :, :, -sa:] = 0
-
-                    selected *= np.random.uniform(*SCALE_RANGE)
-                    selected += np.random.normal(0, NOISE_STD, selected.shape).astype(np.float32)
+                selected *= np.random.uniform(*SCALE_RANGE)
+                selected += np.random.normal(0, NOISE_STD, selected.shape).astype(np.float32)
 
         label = self.labels[real_idx]
         x = torch.from_numpy(selected)
@@ -275,23 +264,24 @@ class NDTDataset(Dataset):
 
 
 # ========================================
-# 数据划分与 DataLoader
+# 数据划分与 DataLoader (硬失败, 无 dummy)
 # ========================================
 
 def build_splits(data_root=DATA_ROOT):
     """按区域分层划分 Train / Val / Test, 保证无数据泄露"""
     all_samples = build_sample_index(data_root)
     n = len(all_samples)
-    print(f"[INFO] 共 {n} 个损伤样本")
 
     if n == 0:
-        print("[WARN] 无真实数据, 使用 dummy 模式验证架构.")
-        dummy = list(range(32))
-        train_ds = NDTDataset(dummy[:24], "train", is_dummy=True)
-        gs = train_ds.get_global_stats()
-        val_ds = NDTDataset(dummy[24:28], "val", global_stats=gs, is_dummy=True)
-        test_ds = NDTDataset(dummy[28:], "test", global_stats=gs, is_dummy=True)
-        return train_ds, val_ds, test_ds
+        abs_root = os.path.abspath(data_root)
+        raise RuntimeError(
+            f"[FATAL] 在 '{abs_root}' 下未找到任何有效损伤样本!\n"
+            f"  期望的子目录: {REGION_DIRS}\n"
+            f"  期望的文件格式: tek{{0000~0065}}ALL{{tag}}.csv\n"
+            f"  请确认数据目录结构正确。"
+        )
+
+    print(f"[INFO] {n} damage samples found")
 
     region_groups = defaultdict(list)
     for i, (ri, *_) in enumerate(all_samples):
