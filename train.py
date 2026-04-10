@@ -4,125 +4,89 @@ import time
 import numpy as np
 import torch
 
-from config import (
-    SAVE_DIR, EPOCHS, BATCH_SIZE, LEARNING_RATE, LAMBDA_REG, LAMBDA_PHYS,
-    denormalize_coord
-)
+from config import SAVE_DIR, EPOCHS, LEARNING_RATE, LAMBDA_REG, LAMBDA_PHYS, denormalize_coord
 from dataset import get_dataloaders
 from model import PINNDamageLocator
 from loss import PINNLoss
 from vis import plot_training_curves, plot_localization_scatter, plot_attention_topology
 
-# ========================================
-# 训练核心逻辑
-# ========================================
-def train_one_epoch(model, dataloader, optimizer, loss_fn, device, epoch):
-    model.train()
-    total_loss = 0.0
-    total_mse_mm = 0.0
-    num_batches = 0
 
-    for batch_idx, (data, coords_norm, cls_labels) in enumerate(dataloader):
-        data = data.to(device)
-        coords_norm = coords_norm.to(device) # [-1, 1]
-        cls_labels = cls_labels.to(device)
+def train_one_epoch(model, loader, optimizer, loss_fn, device, epoch):
+    model.train()
+    total_loss, total_mse_mm, n = 0.0, 0.0, 0
+
+    for batch_idx, (data, coords_norm, cls_labels) in enumerate(loader):
+        data, coords_norm, cls_labels = (
+            data.to(device), coords_norm.to(device), cls_labels.to(device))
 
         optimizer.zero_grad()
         reg_out, cls_logits, edge_attn = model(data)
-        
-        # Loss calculation in Normalized Domain [-1, 1]
-        loss, loss_dict = loss_fn(reg_out, cls_logits, edge_attn, coords_norm, cls_labels)
+        loss, ld = loss_fn(reg_out, cls_logits, edge_attn, coords_norm, cls_labels)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
         optimizer.step()
 
-        # Metrics converted to Physical Domain (mm) for logging
         with torch.no_grad():
-            preds_norm = reg_out[:, :2].detach().cpu().numpy()
-            targets_norm = coords_norm.detach().cpu().numpy()
-            
-            preds_mm = denormalize_coord(preds_norm)
-            targets_mm = denormalize_coord(targets_norm)
-            batch_mse_mm = np.mean((preds_mm - targets_mm) ** 2)
+            p_mm = denormalize_coord(reg_out[:, :2].cpu().numpy())
+            t_mm = denormalize_coord(coords_norm.cpu().numpy())
+            batch_mse = np.mean((p_mm - t_mm) ** 2)
 
         total_loss += loss.item()
-        total_mse_mm += batch_mse_mm
-        num_batches += 1
+        total_mse_mm += batch_mse
+        n += 1
 
         if batch_idx % 10 == 0:
-            print(f"  [Epoch {epoch}] Batch {batch_idx}/{len(dataloader)} | "
-                  f"Loss: {loss.item():.4f} | "
-                  f"Cls: {loss_dict['loss_cls']:.4f} | "
-                  f"Reg: {loss_dict['loss_reg']:.4f} | "
-                  f"Entropy: {loss_dict['loss_phys']:.4f} | "
-                  f"RMSE(mm): {np.sqrt(batch_mse_mm):.2f}")
+            print(f"  [E{epoch}] B{batch_idx}/{len(loader)} | "
+                  f"L={loss.item():.4f} cls={ld['loss_cls']:.4f} "
+                  f"reg={ld['loss_reg']:.4f} ent={ld['loss_entropy']:.4f} "
+                  f"RMSE={np.sqrt(batch_mse):.1f}mm")
 
-    avg_loss = total_loss / max(num_batches, 1)
-    avg_rmse = np.sqrt(total_mse_mm / max(num_batches, 1))
-    return avg_loss, avg_rmse
+    return total_loss / max(n, 1), np.sqrt(total_mse_mm / max(n, 1))
+
 
 @torch.no_grad()
-def validate(model, dataloader, loss_fn, device):
+def validate(model, loader, loss_fn, device):
     model.eval()
-    total_loss = 0.0
-    total_mse_mm = 0.0
-    num_batches = 0
-    correct_cls = 0
-    total_samples = 0
+    total_loss, total_mse_mm, n = 0.0, 0.0, 0
+    correct, total_samples = 0, 0
+    all_preds, all_targets, all_logvars, all_attns = [], [], [], []
 
-    all_preds_mm = []
-    all_targets_mm = []
-    all_log_vars = []
-    all_edge_attns = []
-
-    for data, coords_norm, cls_labels in dataloader:
-        data = data.to(device)
-        coords_norm = coords_norm.to(device)
-        cls_labels = cls_labels.to(device)
+    for data, coords_norm, cls_labels in loader:
+        data, coords_norm, cls_labels = (
+            data.to(device), coords_norm.to(device), cls_labels.to(device))
 
         reg_out, cls_logits, edge_attn = model(data)
-        loss, loss_dict = loss_fn(reg_out, cls_logits, edge_attn, coords_norm, cls_labels)
+        loss, _ = loss_fn(reg_out, cls_logits, edge_attn, coords_norm, cls_labels)
 
-        # Classification Accuracy
-        preds_cls = torch.argmax(cls_logits, dim=1)
-        correct_cls += (preds_cls == cls_labels).sum().item()
+        correct += (cls_logits.argmax(1) == cls_labels).sum().item()
         total_samples += cls_labels.size(0)
 
-        # Physical Metric calculation
-        preds_norm = reg_out[:, :2].cpu().numpy()
-        targets_norm = coords_norm.cpu().numpy()
-        
-        preds_mm = denormalize_coord(preds_norm)
-        targets_mm = denormalize_coord(targets_norm)
-        batch_mse_mm = np.mean((preds_mm - targets_mm) ** 2)
+        p_mm = denormalize_coord(reg_out[:, :2].cpu().numpy())
+        t_mm = denormalize_coord(coords_norm.cpu().numpy())
 
         total_loss += loss.item()
-        total_mse_mm += batch_mse_mm
-        num_batches += 1
+        total_mse_mm += np.mean((p_mm - t_mm) ** 2)
+        n += 1
 
-        all_preds_mm.append(preds_mm)
-        all_targets_mm.append(targets_mm)
-        all_log_vars.append(reg_out[:, 2].cpu().numpy())
-        all_edge_attns.append(edge_attn.cpu().numpy())
+        all_preds.append(p_mm)
+        all_targets.append(t_mm)
+        all_logvars.append(reg_out[:, 2].cpu().numpy())
+        all_attns.append(edge_attn.cpu().numpy())
 
-    avg_loss = total_loss / max(num_batches, 1)
-    avg_rmse = np.sqrt(total_mse_mm / max(num_batches, 1))
-    accuracy = (correct_cls / max(total_samples, 1)) * 100.0
-
+    acc = correct / max(total_samples, 1) * 100
     results = {
-        'preds': np.concatenate(all_preds_mm, axis=0),
-        'targets': np.concatenate(all_targets_mm, axis=0),
-        'log_vars': np.concatenate(all_log_vars, axis=0),
-        'edge_attns': np.concatenate(all_edge_attns, axis=0),
-        'accuracy': accuracy
+        'preds': np.concatenate(all_preds),
+        'targets': np.concatenate(all_targets),
+        'log_vars': np.concatenate(all_logvars),
+        'edge_attns': np.concatenate(all_attns),
+        'accuracy': acc,
     }
+    return total_loss / max(n, 1), np.sqrt(total_mse_mm / max(n, 1)), acc, results
 
-    return avg_loss, avg_rmse, accuracy, results
 
 def main():
-    parser = argparse.ArgumentParser(description='GNN-SHM Bipartite Refactor 训练脚本')
+    parser = argparse.ArgumentParser(description='GNN-SHM 训练脚本')
     parser.add_argument('--epochs', type=int, default=EPOCHS)
-    parser.add_argument('--batch_size', type=int, default=BATCH_SIZE)
     parser.add_argument('--lr', type=float, default=LEARNING_RATE)
     parser.add_argument('--lambda_reg', type=float, default=LAMBDA_REG)
     parser.add_argument('--lambda_phys', type=float, default=LAMBDA_PHYS)
@@ -130,83 +94,67 @@ def main():
     parser.add_argument('--device', type=str, default='auto')
     args = parser.parse_args()
 
-    if args.device == 'auto':
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    else:
-        device = torch.device(args.device)
-    print(f"使用设备: {device}")
+    device = torch.device(
+        'cuda' if args.device == 'auto' and torch.cuda.is_available()
+        else args.device if args.device != 'auto' else 'cpu')
+    print(f"Device: {device}")
 
     os.makedirs(args.save_dir, exist_ok=True)
 
-    # Automatically loads dataloader (it will load dummy if DATA_ROOT has no csv files for quick run)
-    train_loader, val_loader, test_loader = get_dataloaders()
-    print(f"训练集 Batch 数量: {len(train_loader)} | 验证集: {len(val_loader)}")
+    train_ld, val_ld, _ = get_dataloaders()
+    print(f"Train batches: {len(train_ld)} | Val batches: {len(val_ld)}")
 
     model = PINNDamageLocator().to(device)
     loss_fn = PINNLoss(lambda_reg=args.lambda_reg, lambda_phys=args.lambda_phys)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=args.epochs, eta_min=1e-6)
 
-    train_losses, val_losses = [], []
-    train_rmses, val_rmses = [], []
-    best_val_rmse = float('inf')
+    t_losses, v_losses, t_rmses, v_rmses = [], [], [], []
+    best_rmse = float('inf')
 
-    print(f"\n开始训练 ({args.epochs} epochs)...")
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
-        t_loss, t_rmse = train_one_epoch(model, train_loader, optimizer, loss_fn, device, epoch)
-        train_losses.append(t_loss)
-        train_rmses.append(t_rmse)
-
-        v_loss, v_rmse, v_acc, val_results = validate(model, val_loader, loss_fn, device)
-        val_losses.append(v_loss)
-        val_rmses.append(v_rmse)
-
+        tl, tr = train_one_epoch(model, train_ld, optimizer, loss_fn, device, epoch)
+        vl, vr, va, vres = validate(model, val_ld, loss_fn, device)
         scheduler.step()
-        elapsed = time.time() - t0
-        
-        print(f"Epoch {epoch:03d}/{args.epochs} | "
-              f"Train Loss: {t_loss:.4f} RMSE(mm): {t_rmse:.2f} | "
-              f"Val Loss: {v_loss:.4f} RMSE(mm): {v_rmse:.2f} Acc: {v_acc:.1f}% | "
-              f"Time: {elapsed:.1f}s")
 
-        if v_rmse < best_val_rmse:
-            best_val_rmse = v_rmse
+        t_losses.append(tl); v_losses.append(vl)
+        t_rmses.append(tr); v_rmses.append(vr)
+
+        print(f"E{epoch:03d}/{args.epochs} "
+              f"TrL={tl:.4f} TrRMSE={tr:.1f}mm | "
+              f"VL={vl:.4f} VRMSE={vr:.1f}mm Acc={va:.1f}% "
+              f"({time.time()-t0:.1f}s)")
+
+        if vr < best_rmse:
+            best_rmse = vr
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'val_rmse': v_rmse,
+                'val_rmse': vr,
             }, os.path.join(args.save_dir, 'best_model.pt'))
-            print(f"  ★ 保存最优模型 (Val RMSE: {v_rmse:.2f}mm)")
+            print(f"  ★ Best model saved (RMSE={vr:.1f}mm)")
 
-    print(f"\n训练完成！最优 Val RMSE: {best_val_rmse:.2f}mm")
+    print(f"\nDone. Best Val RMSE: {best_rmse:.1f}mm")
 
-    print("生成训练可视化图表...")
-    plot_training_curves(
-        train_losses, val_losses, train_rmses, val_rmses,
-        save_path=os.path.join(args.save_dir, 'training_curves.png')
-    )
+    # 可视化
+    plot_training_curves(t_losses, v_losses, t_rmses, v_rmses,
+                         save_path=os.path.join(args.save_dir, 'training_curves.png'))
 
-    if val_results['preds'].shape[0] > 0:
-        log_vars = val_results['log_vars']
-        avg_std = np.mean(np.exp(0.5 * log_vars))
-        
+    if vres['preds'].shape[0] > 0:
+        avg_std = np.mean(np.exp(0.5 * vres['log_vars']))
         plot_localization_scatter(
-            val_results['targets'],
-            val_results['preds'],
-            log_vars=log_vars,
-            accuracy=val_results['accuracy'],
-            mean_std=avg_std,
-            save_path=os.path.join(args.save_dir, 'localization_scatter.png')
-        )
+            vres['targets'], vres['preds'], log_vars=vres['log_vars'],
+            accuracy=vres['accuracy'], mean_std=avg_std,
+            save_path=os.path.join(args.save_dir, 'localization_scatter.png'))
 
-    if val_results['edge_attns'].shape[0] > 0:
+    if vres['edge_attns'].shape[0] > 0:
         plot_attention_topology(
-            val_results['edge_attns'][0],
-            model.spatial_gnn.edges,
-            save_path=os.path.join(args.save_dir, 'attention_topology.png')
-        )
+            vres['edge_attns'][0], model.gnn.edges,
+            save_path=os.path.join(args.save_dir, 'attention_topology.png'))
+
 
 if __name__ == '__main__':
     main()
