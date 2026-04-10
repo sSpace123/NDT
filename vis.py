@@ -8,7 +8,8 @@ plt.rcParams['font.sans-serif'] = ['SimHei', 'WenQuanYi Micro Hei', 'Arial Unico
 plt.rcParams['axes.unicode_minus'] = False
 
 
-def plot_training_curves(train_losses, val_losses, train_rmse, val_rmse, save_path=None):
+def plot_training_curves(train_losses, val_losses, train_rmse, val_rmse,
+                         save_path=None, show=False):
     """训练/验证 Loss 与 RMSE 双面板曲线"""
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
     epochs = range(1, len(train_losses) + 1)
@@ -28,11 +29,14 @@ def plot_training_curves(train_losses, val_losses, train_rmse, val_rmse, save_pa
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    if show:
+        plt.show()
     plt.close()
 
 
 def plot_localization_scatter(true_coords, pred_coords, log_vars=None,
-                              accuracy=None, mean_std=None, save_path=None):
+                              accuracy=None, mean_std=None,
+                              save_path=None, show=False):
     """
     全景散点图: 275×275 mm 物理画板上
     红星 = GT,  蓝圈 = Pred,  虚线连接对应点对
@@ -83,10 +87,13 @@ def plot_localization_scatter(true_coords, pred_coords, log_vars=None,
 
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    if show:
+        plt.show()
     plt.close()
 
 
-def plot_attention_topology(edge_attns, bipartite_edges, save_path=None):
+def plot_attention_topology(edge_attns, bipartite_edges,
+                            save_path=None, show=False):
     """36 条二分图边的 Attention 拓扑热力图"""
     fig, ax = plt.subplots(figsize=(8, 8))
 
@@ -123,4 +130,6 @@ def plot_attention_topology(edge_attns, bipartite_edges, save_path=None):
 
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    if show:
+        plt.show()
     plt.close()

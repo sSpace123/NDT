@@ -13,7 +13,8 @@ import warnings
 warnings.filterwarnings('ignore')
 
 from config import (
-    DATA_ROOT, REGION_DIRS, REGION_CENTERS, NUM_PAIRS, CSV_HEADER_LINES,
+    DATA_ROOT, REGION_DIRS, REGION_CENTERS, REGION_NAMES,
+    NUM_PAIRS, CSV_HEADER_LINES,
     WINDOW_HALF_SIZE, IN_CHANNELS, BATCH_SIZE, SEED, normalize_coord,
     AUGMENT_REPEAT, NOISE_STD, SCALE_RANGE, TIME_SHIFT_MAX,
     FS, FC, NUM_CLASSES, WAVELET_NAME, WAVELET_LEVEL,
@@ -309,6 +310,19 @@ def build_splits(data_root=DATA_ROOT):
             train_idx.extend(idxs[2:])
         else:
             train_idx.extend(idxs)
+
+    # 严格验证: 三个集合无交集
+    assert not (set(train_idx) & set(val_idx)), "Train/Val overlap!"
+    assert not (set(train_idx) & set(test_idx)), "Train/Test overlap!"
+    assert not (set(val_idx) & set(test_idx)), "Val/Test overlap!"
+
+    # 打印划分详情
+    def _desc(indices):
+        return [f"{REGION_NAMES[all_samples[i][0]]}({all_samples[i][1]})" for i in indices]
+
+    print(f"  Train({len(train_idx)}): {_desc(train_idx)}")
+    print(f"  Val  ({len(val_idx)}):  {_desc(val_idx)}")
+    print(f"  Test ({len(test_idx)}):  {_desc(test_idx)}")
 
     train_ds = NDTDataset([all_samples[i] for i in train_idx], "train")
     gs = train_ds.get_global_stats()
