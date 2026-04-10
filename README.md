@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # GNN-SHM: 基于图神经网络和物理约束的损伤定位系统
 
 > 适用于**变厚度扭转结构**中基于超声导波 (Lamb Wave) 的复杂损伤定位问题
@@ -125,3 +126,8 @@ python train.py --epochs 200 --lr 1e-3 --batch_size 4
 ## License
 
 MIT
+=======
+# NDT
+发动机涡轮叶片变厚度无损检测
+//test
+>>>>>>> 20bf0442b9ac059a2ab256e23d75ed0a15abda8c

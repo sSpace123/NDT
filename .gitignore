@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Python
 __pycache__/
 *.py[cod]
@@ -12,10 +13,30 @@ build/
 .venv/
 venv/
 env/
+=======
+# 数据文件
+*.csv
+
+# 模型检查点
+checkpoints/
+*.pt
+
+# 图片输出
+plots/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+>>>>>>> 20bf0442b9ac059a2ab256e23d75ed0a15abda8c
 
 # IDE
 .vscode/
 .idea/
+<<<<<<< HEAD
 *.swp
 *.swo
 
@@ -34,3 +55,9 @@ logs/
 
 # Matplotlib cache
 .matplotlib/
+=======
+
+# 系统文件
+Thumbs.db
+.DS_Store
+>>>>>>> 20bf0442b9ac059a2ab256e23d75ed0a15abda8c
