@@ -31,6 +31,7 @@ class PINNLoss(nn.Module):
         # 2. 异方差不确定性回归损失
         preds_xy = reg_preds[:, :2]    # [B, 2]
         log_var = reg_preds[:, 2:3]    # [B, 1]
+        log_var = torch.clamp(log_var, min=-6.0, max=6.0)  # 防止不确定性头失控
         mse = F.mse_loss(preds_xy, targets_coords, reduction='none').mean(dim=1, keepdim=True)
         loss_reg = (0.5 * torch.exp(-log_var) * mse + 0.5 * log_var).mean()
 

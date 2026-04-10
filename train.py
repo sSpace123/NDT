@@ -31,7 +31,7 @@ def train_one_epoch(model, loader, optimizer, loss_fn, device):
         reg_out, cls_logits, edge_attn = model(data)
         loss, _ = loss_fn(reg_out, cls_logits, edge_attn, coords_norm, cls_labels)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
         optimizer.step()
 
         with torch.no_grad():

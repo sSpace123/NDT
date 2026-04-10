@@ -72,7 +72,7 @@ WAVELET_LEVEL = 4
 
 BATCH_SIZE = 4
 EPOCHS = 55
-LEARNING_RATE = 1e-3
+LEARNING_RATE = 5e-4   # 降低: 225 batches/epoch 但只有 9 个物理样本
 LAMBDA_REG = 1.0
 LAMBDA_PHYS = 0.01   # 熵正则化权重 (下调以避免约束过强)
 
