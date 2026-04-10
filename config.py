@@ -47,8 +47,10 @@ def denormalize_coord(norm_coord):
 # 2. 数据处理配置
 # ========================================
 
-DATA_ROOT = "../data"
-REGION_DIRS = [f"region_{i}" for i in range(NUM_CLASSES)]
+# 数据根目录: gnn_shm 的上级目录 (即 模拟损伤/)
+DATA_ROOT = ".."
+# 区域子目录名: 与 REGION_NAMES 索引一一对应
+REGION_DIRS = ["左上", "上", "右上", "左中", "中", "右中", "左下", "下", "右下"]
 
 WINDOW_HALF_SIZE = 1024   # 中心峰值两侧各截取点数
 NUM_PAIRS = 66            # CSV 采集总文件对数 (C(12,2))

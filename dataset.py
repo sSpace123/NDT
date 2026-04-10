@@ -86,12 +86,12 @@ def preprocess_pair(healthy_csv, damage_csv):
         base_df = pd.DataFrame(base_data, columns=["excitation", "response"])
         dmg_df = pd.DataFrame(dmg_data, columns=["excitation", "response"])
 
-    # 截断到共同长度
+    # 截断到共同长度 & 清洗异常值 (示波器溢出会产生 inf)
     min_len = min(len(base_df), len(dmg_df))
-    base_exc = base_df["excitation"].values[:min_len].astype(np.float32)
-    base_resp = base_df["response"].values[:min_len].astype(np.float32)
-    dmg_exc = dmg_df["excitation"].values[:min_len].astype(np.float32)
-    dmg_resp = dmg_df["response"].values[:min_len].astype(np.float32)
+    base_exc = np.nan_to_num(base_df["excitation"].values[:min_len], nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+    base_resp = np.nan_to_num(base_df["response"].values[:min_len], nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+    dmg_exc = np.nan_to_num(dmg_df["excitation"].values[:min_len], nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+    dmg_resp = np.nan_to_num(dmg_df["response"].values[:min_len], nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
 
     # 差分
     diff_exc = dmg_exc - base_exc
