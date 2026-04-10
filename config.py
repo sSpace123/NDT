@@ -71,7 +71,7 @@ WAVELET_LEVEL = 4
 # ========================================
 
 BATCH_SIZE = 4
-EPOCHS = 50
+EPOCHS = 55
 LEARNING_RATE = 1e-3
 LAMBDA_REG = 1.0
 LAMBDA_PHYS = 0.01   # 熵正则化权重 (下调以避免约束过强)
@@ -79,11 +79,11 @@ LAMBDA_PHYS = 0.01   # 熵正则化权重 (下调以避免约束过强)
 EDGE_DIM = 64
 NODE_DIM = 128
 
-# 数据增强
-AUGMENT_REPEAT = 2
-NOISE_STD = 0.05
-SCALE_RANGE = (0.8, 1.2)
-TIME_SHIFT_MAX = 50
+# 数据增强 (小样本高倍增强, 物理约束)
+AUGMENT_REPEAT = 100     # 12 样本 × 100 = 1200 训练样本/epoch
+NOISE_STD = 0.08         # 增强抗底噪能力
+SCALE_RANGE = (0.7, 1.3) # 模拟耦合差异
+TIME_SHIFT_MAX = 30      # 严格受限: 30pts × 0.3mm/pt = 9mm < 91mm/2 九宫格半宽
 SEED = 42
 
 SAVE_DIR = os.path.join(_THIS_DIR, "outputs")

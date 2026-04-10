@@ -232,18 +232,22 @@ class NDTDataset(Dataset):
         return len(self.samples) * self.repeat
 
     def __getitem__(self, idx):
+        # real_idx 保证增强变体绑定到原始物理样本 (防数据泄露)
         real_idx = idx % len(self.samples)
-        selected = self.data_cache[real_idx].copy()
+        selected = self.data_cache[real_idx].copy()  # [36, 4, 32, 2048]
 
         if self.mode == "train":
-            # 传感器 Dropout: mask 1~3 条边
-            if np.random.rand() < 0.5:
-                drop = np.random.choice(NUM_BIPARTITE_EDGES,
-                                        np.random.randint(1, 4), replace=False)
-                selected[drop] = 0.0
+            # --- 1. 高维 Sensor Dropout (p=0.6): mask 1~5 条边 ---
+            #     逼迫 GNN 学会备用物理路径, 而非死记某条边
+            if np.random.rand() < 0.6:
+                n_drop = np.random.randint(1, 6)  # 1~5 条
+                drop_edges = np.random.choice(
+                    NUM_BIPARTITE_EDGES, n_drop, replace=False)
+                selected[drop_edges] = 0.0
 
-            # 物理微扰: 时移 + 幅度缩放 + 噪声
-            if np.random.rand() < 0.5:
+            # --- 2. 受控物理时移 (p=0.7): ±TIME_SHIFT_MAX 点 ---
+            #     30pts × 0.3mm/pt = 9mm, 远小于 91mm/2 九宫格半宽
+            if np.random.rand() < 0.7:
                 shift = np.random.randint(-TIME_SHIFT_MAX, TIME_SHIFT_MAX + 1)
                 if shift > 0:
                     selected[:, :, :, shift:] = selected[:, :, :, :-shift].copy()
@@ -253,8 +257,19 @@ class NDTDataset(Dataset):
                     selected[:, :, :, :-sa] = selected[:, :, :, sa:].copy()
                     selected[:, :, :, -sa:] = 0
 
-                selected *= np.random.uniform(*SCALE_RANGE)
-                selected += np.random.normal(0, NOISE_STD, selected.shape).astype(np.float32)
+            # --- 3. 独立边缘缩放 (p=0.8): 36 条边各自独立系数 ---
+            #     模拟不同传感器的接触耦合差异
+            if np.random.rand() < 0.8:
+                edge_scales = np.random.uniform(
+                    SCALE_RANGE[0], SCALE_RANGE[1],
+                    size=(NUM_BIPARTITE_EDGES, 1, 1, 1)  # [36, 1, 1, 1]
+                ).astype(np.float32)
+                selected *= edge_scales
+
+            # --- 4. 加性高斯白噪声 AWGN (p=0.8) ---
+            if np.random.rand() < 0.8:
+                selected += np.random.normal(
+                    0, NOISE_STD, selected.shape).astype(np.float32)
 
         label = self.labels[real_idx]
         x = torch.from_numpy(selected)
