@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Data & checkpoints (too large for git)
+*.pt
+*.pth
+*.npy
+*.npz
+checkpoints/
+outputs/
+logs/
+
+# Matplotlib cache
+.matplotlib/
