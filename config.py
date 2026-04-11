@@ -17,12 +17,12 @@ SENSOR_COORDS = np.array([
 ], dtype=np.float32)
 
 NUM_NODES = 12
-NUM_CLASSES = 9
 
-REGION_NAMES = ["左上", "上", "右上", "左中", "中", "右中", "左下", "下", "右下"]
+# 区域子目录名 (纯粹用于数据扫描和日志, 不作为分类标签)
+REGION_DIRS = ["左上", "上", "右上", "左中", "中", "右中", "左下", "下", "右下"]
 
-# 区域中心地标 (mm), 用于粗分类标签
-REGION_CENTERS = np.array([
+# 各区域损伤中心坐标 (mm), 仅用于生成连续回归标签
+DAMAGE_CENTERS = np.array([
     [-83.3,  83.3], [  0.0,  83.3], [ 83.3,  83.3],
     [-83.3,   0.0], [  0.0,   0.0], [ 83.3,   0.0],
     [-83.3, -83.3], [  0.0, -83.3], [ 83.3, -83.3],
@@ -48,12 +48,8 @@ def denormalize_coord(norm_coord):
 # 2. 数据处理配置 — 动态绝对路径
 # ========================================
 
-# config.py 所在目录 = gnn_shm/，其父目录 = 模拟损伤/ (包含中文子文件夹)
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_ROOT = os.path.dirname(_THIS_DIR)
-
-# 区域子目录名: 与 REGION_NAMES 索引一一对应
-REGION_DIRS = ["左上", "上", "右上", "左中", "中", "右中", "左下", "下", "右下"]
 
 WINDOW_HALF_SIZE = 1024   # 中心峰值两侧各截取点数
 NUM_PAIRS = 66            # CSV 采集总文件对数 (C(12,2))
@@ -67,23 +63,23 @@ WAVELET_NAME = 'db4'
 WAVELET_LEVEL = 4
 
 # ========================================
-# 3. 训练与模型超参数
+# 3. 训练与模型超参数 (纯回归, 无分类)
 # ========================================
 
 BATCH_SIZE = 4
 EPOCHS = 55
-LEARNING_RATE = 5e-4   # 降低: 225 batches/epoch 但只有 9 个物理样本
+LEARNING_RATE = 5e-4
 LAMBDA_REG = 1.0
-LAMBDA_PHYS = 0.5    # L2 多边协同正则化权重 (增大以鼓励注意力分散)
+LAMBDA_PHYS = 0.5    # L2 多边协同正则化权重
 
-EDGE_DIM = 16       # 瘦身: 12 样本无法支撑 64 维边特征
-NODE_DIM = 32       # 瘦身: 12 样本无法支撑 128 维节点特征
+EDGE_DIM = 16        # 瘦身: 12 样本无法支撑高维
+NODE_DIM = 32
 
-# 数据增强 (小样本高倍增强, 物理约束)
-AUGMENT_REPEAT = 20      # 9 train × 20 = 180 样本/epoch (45 batches, ~70s/epoch)
-NOISE_STD = 0.08         # 增强抗底噪能力
-SCALE_RANGE = (0.7, 1.3) # 模拟耦合差异
-TIME_SHIFT_MAX = 5       # 极严格: 5pts × 0.3mm/pt = 1.5mm, 保护同次采样相位匹配
+# 数据增强 (小样本, 物理约束)
+AUGMENT_REPEAT = 20
+NOISE_STD = 0.08
+SCALE_RANGE = (0.7, 1.3)
+TIME_SHIFT_MAX = 5   # 5pts × 0.3mm/pt = 1.5mm, 保护相位匹配
 SEED = 42
 
 SAVE_DIR = os.path.join(_THIS_DIR, "outputs")

@@ -34,18 +34,16 @@ def plot_training_curves(train_losses, val_losses, train_rmse, val_rmse,
     plt.close()
 
 
-def plot_localization_scatter(true_coords, pred_coords, log_vars=None,
-                              accuracy=None, mean_std=None,
+def plot_localization_scatter(true_coords, pred_coords, mae=None, sr20=None,
                               save_path=None, show=False):
     """
-    全景散点图: 275×275 mm 物理画板上
+    全景散点图: 275×275 mm 物理画板
     红星 = GT,  蓝圈 = Pred,  虚线连接对应点对
-    标题自动渲染 Accuracy 和 ±σ
+    标题渲染 MAE 和 <20mm 成功率
     """
     fig, ax = plt.subplots(figsize=(10, 10))
     board = COORD_MAX - COORD_MIN
 
-    # 画板边界
     ax.add_patch(patches.Rectangle(
         (COORD_MIN, COORD_MIN), board, board,
         lw=2, ec='black', fc='none'))
@@ -70,17 +68,13 @@ def plot_localization_scatter(true_coords, pred_coords, log_vars=None,
                    edgecolors='navy', label='预测 (Pred)' if i == 0 else '')
         ax.plot([tx, px], [ty, py], 'k--', alpha=0.4, lw=1, zorder=6)
 
-        if log_vars is not None:
-            r = np.exp(0.5 * log_vars[i]) * 1.5
-            ax.add_patch(patches.Circle((px, py), r, color='dodgerblue', alpha=0.1, zorder=1))
-
     ax.set_xlim(COORD_MIN - 20, COORD_MAX + 20)
     ax.set_ylim(COORD_MIN - 20, COORD_MAX + 20)
     ax.set_aspect('equal')
 
     title = "全景损伤定位评估"
-    if accuracy is not None and mean_std is not None:
-        title += f"\nAccuracy: {accuracy:.1f}% | ±σ: {mean_std:.2f} mm"
+    if mae is not None and sr20 is not None:
+        title += f"\nMAE: {mae:.2f} mm | <20mm: {sr20:.1f}%"
     ax.set_title(title, fontsize=16, fontweight='bold', pad=15)
     ax.set_xlabel('X (mm)'); ax.set_ylabel('Y (mm)')
     ax.legend(loc='upper right', framealpha=0.9)

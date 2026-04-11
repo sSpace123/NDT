@@ -13,16 +13,15 @@ import warnings
 warnings.filterwarnings('ignore')
 
 from config import (
-    DATA_ROOT, REGION_DIRS, REGION_CENTERS, REGION_NAMES,
+    DATA_ROOT, REGION_DIRS, DAMAGE_CENTERS,
     NUM_PAIRS, CSV_HEADER_LINES,
     WINDOW_HALF_SIZE, IN_CHANNELS, BATCH_SIZE, SEED, normalize_coord,
     AUGMENT_REPEAT, NOISE_STD, SCALE_RANGE, TIME_SHIFT_MAX,
-    FS, FC, NUM_CLASSES, WAVELET_NAME, WAVELET_LEVEL,
+    FS, FC, WAVELET_NAME, WAVELET_LEVEL,
 )
 
 # ========================================
 # 预计算 36 边二分图索引映射 (Left 0~5 × Right 6~11)
-# 从原始 66 对 C(12,2) 中精确提取
 # ========================================
 BIPARTITE_INDICES = []
 _idx = 0
@@ -70,10 +69,9 @@ def _get_cwt(data):
 
 def preprocess_pair(healthy_csv, damage_csv):
     """
-    单条路径的完整 Pipeline: 读取 → 差分 → 滤波 → 去噪 → 包络 → 窗口裁剪 → CWT
+    单条路径完整 Pipeline: 读取 → 差分 → 滤波 → 去噪 → 包络 → 窗口裁剪 → CWT
     返回: [4, 32, 2048]
     """
-    # 读取 CSV —— 使用 pd.to_numeric 强制清洗非数值字符
     try:
         base_df = pd.read_csv(healthy_csv, skiprows=CSV_HEADER_LINES,
                               usecols=[1, 2], names=["excitation", "response"])
@@ -87,7 +85,6 @@ def preprocess_pair(healthy_csv, damage_csv):
         base_df = pd.DataFrame(base_data, columns=["excitation", "response"])
         dmg_df = pd.DataFrame(dmg_data, columns=["excitation", "response"])
 
-    # 强制转换 + 清洗: 非数值字符 → NaN → 0.0, inf → 0.0
     for col in ["excitation", "response"]:
         base_df[col] = pd.to_numeric(base_df[col], errors='coerce')
         dmg_df[col] = pd.to_numeric(dmg_df[col], errors='coerce')
@@ -98,24 +95,19 @@ def preprocess_pair(healthy_csv, damage_csv):
     dmg_exc = np.nan_to_num(dmg_df["excitation"].values[:min_len], nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
     dmg_resp = np.nan_to_num(dmg_df["response"].values[:min_len], nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
 
-    # 差分
     diff_exc = dmg_exc - base_exc
     diff_resp = dmg_resp - base_resp
 
-    # 带通滤波 [0.5fc, 1.5fc]
     diff_exc = _butter_bandpass(diff_exc, 0.5 * FC, 1.5 * FC, FS)
     diff_resp = _butter_bandpass(diff_resp, 0.5 * FC, 1.5 * FC, FS)
 
-    # 小波去噪
     diff_exc = _wavelet_denoise(diff_exc)
     diff_resp = _wavelet_denoise(diff_resp)
 
-    # Hilbert 包络
     env_exc = np.abs(hilbert(diff_exc))
     env_resp = np.abs(hilbert(diff_resp))
 
-    # 峰值对齐窗口裁剪 (±1024 = 2048 点)
-    # 以激励包络为基准对齐, 保留不同路径的相对飞行时间差 (ToF)
+    # 物理基准: 以激励包络对齐, 保留不同路径的相对飞行时间差 (ToF)
     peak = np.argmax(env_exc)
     length = len(env_exc)
     start = max(0, peak - WINDOW_HALF_SIZE)
@@ -126,7 +118,6 @@ def preprocess_pair(healthy_csv, damage_csv):
     def _crop_pad(sig):
         return np.pad(sig[start:end], (pad_l, pad_r), 'constant')
 
-    # CWT → [4, 32, 2048]
     tensor_cwt = np.stack([
         _get_cwt(_crop_pad(diff_exc)),
         _get_cwt(_crop_pad(diff_resp)),
@@ -134,22 +125,18 @@ def preprocess_pair(healthy_csv, damage_csv):
         _get_cwt(_crop_pad(env_resp)),
     ], axis=0).astype(np.float32)
 
-    # 最终防线: 保证输出 100% 有限
     return np.nan_to_num(tensor_cwt, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 # ========================================
-# 数据目录扫描 (硬失败, 无 dummy)
+# 数据目录扫描
 # ========================================
 
 def build_sample_index(data_root=DATA_ROOT):
-    """扫描 data_root 下各区域子目录, 返回 [(region_idx, tag, dmg_files, healthy_files), ...]"""
+    """扫描子目录, 返回 [(region_idx, tag, dmg_files, healthy_files), ...]"""
     abs_root = os.path.abspath(data_root)
     if not os.path.exists(abs_root):
-        raise RuntimeError(
-            f"[FATAL] DATA_ROOT 不存在: '{abs_root}'\n"
-            f"  请检查 config.py 中 DATA_ROOT 的配置, 当前值基于 __file__ 自动推导。"
-        )
+        raise RuntimeError(f"[FATAL] DATA_ROOT 不存在: '{abs_root}'")
 
     samples = []
     for ri, rd in enumerate(REGION_DIRS):
@@ -174,15 +161,14 @@ def build_sample_index(data_root=DATA_ROOT):
 
 
 # ========================================
-# Dataset (无 dummy 模式)
+# Dataset — 纯回归, 返回 (x, coord_norm) 无 region_idx
 # ========================================
 
 class NDTDataset(Dataset):
     """
-    加载 36 条二分图边的 CWT 特征, 返回 (x, coord_norm, region_idx).
-    - x: [36, 4, 32, 2048]
-    - coord_norm: [2]  归一化到 [-1, 1]
-    - region_idx: scalar  0~8
+    纯回归数据集: 返回 (x, coord_norm).
+    - x: [36, 4, 32, 2048]  二分图边 CWT 特征
+    - coord_norm: [2]  归一化坐标 [-1, 1]
     """
 
     def __init__(self, sample_index, mode="train", global_stats=None):
@@ -190,41 +176,37 @@ class NDTDataset(Dataset):
         self.mode = mode
         self.repeat = AUGMENT_REPEAT if mode == "train" else 1
 
-        # --- 预处理并缓存 ---
+        # 预处理并缓存
         self.data_cache = {}
         print(f"  [{mode}] {len(sample_index)} samples, extracting {NUM_BIPARTITE_EDGES}-edge CWT...")
         for idx, (ri, tag, dmg_files, healthy_files) in enumerate(self.samples):
             signals = np.stack([
                 preprocess_pair(healthy_files[pi], dmg_files[pi])
                 for pi in BIPARTITE_INDICES
-            ], axis=0)  # [36, 4, 32, 2048]
+            ], axis=0)
             self.data_cache[idx] = np.nan_to_num(signals, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # --- 全局 Z-score 归一化 ---
+        # 全局 Z-score 归一化
         if global_stats is not None:
             self.global_mean, self.global_std = global_stats
         elif mode == "train" and len(self.samples) > 0:
-            all_data = np.stack(list(self.data_cache.values()))  # [N, 36, 4, 32, 2048]
-            self.global_mean = np.mean(all_data, axis=(0, 1, 3, 4), keepdims=False)  # [4]
+            all_data = np.stack(list(self.data_cache.values()))
+            self.global_mean = np.mean(all_data, axis=(0, 1, 3, 4), keepdims=False)
             self.global_std = np.std(all_data, axis=(0, 1, 3, 4), keepdims=False) + 1e-8
         else:
             self.global_mean = np.zeros(IN_CHANNELS, dtype=np.float32)
             self.global_std = np.ones(IN_CHANNELS, dtype=np.float32)
 
-        # 应用归一化
-        mean = self.global_mean[np.newaxis, :, np.newaxis, np.newaxis]  # [1, 4, 1, 1]
+        mean = self.global_mean[np.newaxis, :, np.newaxis, np.newaxis]
         std = self.global_std[np.newaxis, :, np.newaxis, np.newaxis]
         for idx in range(len(self.samples)):
             normed = (self.data_cache[idx] - mean) / std
             self.data_cache[idx] = np.clip(normed, -10, 10).astype(np.float32)
 
-        # --- 标签 ---
-        self.labels = []
+        # 纯坐标标签 (无 region_idx)
+        self.coords = []
         for ri, tag, _, _ in self.samples:
-            self.labels.append({
-                "region_idx": ri,
-                "center_norm": normalize_coord(REGION_CENTERS[ri]),
-            })
+            self.coords.append(normalize_coord(DAMAGE_CENTERS[ri]))
 
     def get_global_stats(self):
         return (self.global_mean, self.global_std)
@@ -233,21 +215,18 @@ class NDTDataset(Dataset):
         return len(self.samples) * self.repeat
 
     def __getitem__(self, idx):
-        # real_idx 保证增强变体绑定到原始物理样本 (防数据泄露)
         real_idx = idx % len(self.samples)
-        selected = self.data_cache[real_idx].copy()  # [36, 4, 32, 2048]
+        selected = self.data_cache[real_idx].copy()
 
         if self.mode == "train":
-            # --- 1. 高维 Sensor Dropout (p=0.6): mask 1~5 条边 ---
-            #     逼迫 GNN 学会备用物理路径, 而非死记某条边
+            # 1. Sensor Dropout (p=0.6): mask 1~5 条边
             if np.random.rand() < 0.6:
-                n_drop = np.random.randint(1, 6)  # 1~5 条
+                n_drop = np.random.randint(1, 6)
                 drop_edges = np.random.choice(
                     NUM_BIPARTITE_EDGES, n_drop, replace=False)
                 selected[drop_edges] = 0.0
 
-            # --- 2. 受控物理时移 (p=0.7): ±TIME_SHIFT_MAX 点 ---
-            #     30pts × 0.3mm/pt = 9mm, 远小于 91mm/2 九宫格半宽
+            # 2. 受控时移 (p=0.7): ±5 点
             if np.random.rand() < 0.7:
                 shift = np.random.randint(-TIME_SHIFT_MAX, TIME_SHIFT_MAX + 1)
                 if shift > 0:
@@ -258,33 +237,30 @@ class NDTDataset(Dataset):
                     selected[:, :, :, :-sa] = selected[:, :, :, sa:].copy()
                     selected[:, :, :, -sa:] = 0
 
-            # --- 3. 独立边缘缩放 (p=0.8): 36 条边各自独立系数 ---
-            #     模拟不同传感器的接触耦合差异
+            # 3. 独立边缩放 (p=0.8): 36 条边各自独立
             if np.random.rand() < 0.8:
                 edge_scales = np.random.uniform(
                     SCALE_RANGE[0], SCALE_RANGE[1],
-                    size=(NUM_BIPARTITE_EDGES, 1, 1, 1)  # [36, 1, 1, 1]
+                    size=(NUM_BIPARTITE_EDGES, 1, 1, 1)
                 ).astype(np.float32)
                 selected *= edge_scales
 
-            # --- 4. 加性高斯白噪声 AWGN (p=0.8) ---
+            # 4. AWGN (p=0.8)
             if np.random.rand() < 0.8:
                 selected += np.random.normal(
                     0, NOISE_STD, selected.shape).astype(np.float32)
 
-        label = self.labels[real_idx]
         x = torch.from_numpy(selected)
-        coord = torch.from_numpy(label["center_norm"])
-        region = torch.tensor(label["region_idx"], dtype=torch.long)
-        return x, coord, region
+        coord = torch.from_numpy(self.coords[real_idx].copy())
+        return x, coord
 
 
 # ========================================
-# 数据划分与 DataLoader (硬失败, 无 dummy)
+# 数据划分与 DataLoader
 # ========================================
 
 def build_splits(data_root=DATA_ROOT):
-    """按区域分层划分 Train / Val / Test, 保证无数据泄露"""
+    """按区域分层划分 Train / Val / Test"""
     all_samples = build_sample_index(data_root)
     n = len(all_samples)
 
@@ -293,8 +269,7 @@ def build_splits(data_root=DATA_ROOT):
         raise RuntimeError(
             f"[FATAL] 在 '{abs_root}' 下未找到任何有效损伤样本!\n"
             f"  期望的子目录: {REGION_DIRS}\n"
-            f"  期望的文件格式: tek{{0000~0065}}ALL{{tag}}.csv\n"
-            f"  请确认数据目录结构正确。"
+            f"  期望的文件格式: tek{{0000~0065}}ALL{{tag}}.csv"
         )
 
     print(f"[INFO] {n} damage samples found")
@@ -317,14 +292,12 @@ def build_splits(data_root=DATA_ROOT):
         else:
             train_idx.extend(idxs)
 
-    # 严格验证: 三个集合无交集
     assert not (set(train_idx) & set(val_idx)), "Train/Val overlap!"
     assert not (set(train_idx) & set(test_idx)), "Train/Test overlap!"
     assert not (set(val_idx) & set(test_idx)), "Val/Test overlap!"
 
-    # 打印划分详情
     def _desc(indices):
-        return [f"{REGION_NAMES[all_samples[i][0]]}({all_samples[i][1]})" for i in indices]
+        return [f"{REGION_DIRS[all_samples[i][0]]}({all_samples[i][1]})" for i in indices]
 
     print(f"  Train({len(train_idx)}): {_desc(train_idx)}")
     print(f"  Val  ({len(val_idx)}):  {_desc(val_idx)}")
