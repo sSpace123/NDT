@@ -5,7 +5,7 @@ import argparse
 from config import SAVE_DIR, REGION_DIRS, denormalize_coord
 from dataset import get_dataloaders
 from model import PINNDamageLocator
-from loss import PINNLoss
+from loss import GeometricPINNLoss
 from vis import plot_localization_scatter, plot_attention_topology
 
 
@@ -38,7 +38,7 @@ def main():
     print(f"\nTest set: {len(test_loader.dataset)} samples "
           f"(× repeat={test_loader.dataset.repeat})")
 
-    loss_fn = PINNLoss()
+    loss_fn = GeometricPINNLoss()
     all_preds, all_targets, all_attns = [], [], []
 
     for data, coords_norm in test_loader:

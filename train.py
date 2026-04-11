@@ -10,7 +10,7 @@ from config import (
 )
 from dataset import get_dataloaders
 from model import PINNDamageLocator
-from loss import PINNLoss
+from loss import GeometricPINNLoss
 from vis import plot_training_curves, plot_localization_scatter, plot_attention_topology
 
 
@@ -89,7 +89,7 @@ def main():
     print(f"Batches: train={len(train_ld)} val={len(val_ld)} test={len(test_ld)}")
 
     model = PINNDamageLocator().to(device)
-    loss_fn = PINNLoss().to(device)
+    loss_fn = GeometricPINNLoss().to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=args.epochs, eta_min=1e-6)

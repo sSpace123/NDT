@@ -18,7 +18,7 @@ SENSOR_COORDS = np.array([
 
 NUM_NODES = 12
 
-# 区域子目录名 (纯粹用于数据扫描和日志, 不作为分类标签)
+# 区域子目录名 (仅用于数据扫描, 不参与分类)
 REGION_DIRS = ["左上", "上", "右上", "左中", "中", "右中", "左下", "下", "右下"]
 
 # 各区域损伤中心坐标 (mm), 仅用于生成连续回归标签
@@ -32,6 +32,10 @@ DAMAGE_CENTERS = np.array([
 COORD_MIN = -137.5
 COORD_MAX = 137.5
 COORD_RANGE = COORD_MAX - COORD_MIN  # 275.0
+
+# 几何 PINN 物理参数
+DEAD_ZONE_R = 10.0   # 带状容忍度半径 (mm): 预测点在路径 ±R mm 范围内不受惩罚
+                      # 物理含义: 导波散射区域的有效宽度 (而非理想化的一维射线)
 
 
 def normalize_coord(coord):
@@ -51,11 +55,9 @@ def denormalize_coord(norm_coord):
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_ROOT = os.path.dirname(_THIS_DIR)
 
-WINDOW_HALF_SIZE = 1024   # 中心峰值两侧各截取点数
-NUM_PAIRS = 66            # CSV 采集总文件对数 (C(12,2))
-CSV_HEADER_LINES = 21     # 示波器头文件行数
-
-# CWT 特征通道数
+WINDOW_HALF_SIZE = 1024
+NUM_PAIRS = 66
+CSV_HEADER_LINES = 21
 IN_CHANNELS = 4
 
 # 小波去噪参数
@@ -63,23 +65,29 @@ WAVELET_NAME = 'db4'
 WAVELET_LEVEL = 4
 
 # ========================================
-# 3. 训练与模型超参数 (纯回归, 无分类)
+# 3. 网络架构参数
+# ========================================
+
+EDGE_DIM = 16             # 边特征维度 (极简: 12 样本)
+NODE_DIM = 32             # 节点特征维度
+TIME_REDUCED_LEN = 128    # 1D 时间轴降维目标长度 (2048 / 16 = 128)
+                          # 控制 AvgPool1d 的 kernel_size = 2048 / TIME_REDUCED_LEN
+
+# ========================================
+# 4. 训练与 Loss 参数
 # ========================================
 
 BATCH_SIZE = 4
 EPOCHS = 55
 LEARNING_RATE = 5e-4
-LAMBDA_REG = 1.0
-LAMBDA_PHYS = 0.5    # L2 多边协同正则化权重
-
-EDGE_DIM = 16        # 瘦身: 12 样本无法支撑高维
-NODE_DIM = 32
+LAMBDA_REG = 1.0          # MSE 坐标回归损失权重
+LAMBDA_PHYS = 0.5         # 几何 PINN 物理正则化权重
 
 # 数据增强 (小样本, 物理约束)
 AUGMENT_REPEAT = 20
 NOISE_STD = 0.08
 SCALE_RANGE = (0.7, 1.3)
-TIME_SHIFT_MAX = 5   # 5pts × 0.3mm/pt = 1.5mm, 保护相位匹配
+TIME_SHIFT_MAX = 5
 SEED = 42
 
 SAVE_DIR = os.path.join(_THIS_DIR, "outputs")
