@@ -338,8 +338,9 @@ def build_splits(data_root=DATA_ROOT):
 
 def get_dataloaders(data_root=DATA_ROOT):
     train_ds, val_ds, test_ds = build_splits(data_root)
+    common = dict(num_workers=4, pin_memory=True, persistent_workers=True)
     return (
-        DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, drop_last=True),
-        DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False),
-        DataLoader(test_ds, batch_size=1, shuffle=False),
+        DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, drop_last=True, **common),
+        DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, **common),
+        DataLoader(test_ds, batch_size=1, shuffle=False, **common),
     )

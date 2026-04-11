@@ -24,10 +24,13 @@ class SEBlock(nn.Module):
 
 
 class EdgeCNN(nn.Module):
-    """2D CNN + SE: [B, 4, F, T] -> [B, edge_dim]"""
+    """2D CNN + SE: [B, 4, F, T] -> [B, edge_dim]
+    输入 T=2048, 先用 AvgPool 压缩到 512, 大幅削减后续计算量"""
     def __init__(self, in_channels=IN_CHANNELS, out_channels=EDGE_DIM):
         super().__init__()
         self.conv = nn.Sequential(
+            # 时间维度早期降采样: [B, 4, 32, 2048] → [B, 4, 32, 512]
+            nn.AvgPool2d(kernel_size=(1, 4), stride=(1, 4)),
             nn.Conv2d(in_channels, 16, 3, padding=1, stride=(1, 2)),
             nn.BatchNorm2d(16), nn.ReLU(inplace=True), nn.MaxPool2d(2),
             SEBlock(16),

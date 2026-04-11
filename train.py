@@ -18,7 +18,7 @@ from vis import plot_training_curves, plot_localization_scatter, plot_attention_
 # 训练核心
 # ========================================
 
-def train_one_epoch(model, loader, optimizer, loss_fn, device):
+def train_one_epoch(model, loader, optimizer, loss_fn, device, epoch):
     """静默训练一个 Epoch, 仅返回统计量, 无任何 Batch 级 print"""
     model.train()
     total_loss, total_mse_mm, n = 0.0, 0.0, 0
@@ -29,7 +29,7 @@ def train_one_epoch(model, loader, optimizer, loss_fn, device):
 
         optimizer.zero_grad()
         reg_out, cls_logits, edge_attn = model(data)
-        loss, _ = loss_fn(reg_out, cls_logits, edge_attn, coords_norm, cls_labels)
+        loss, _ = loss_fn(reg_out, cls_logits, edge_attn, coords_norm, cls_labels, epoch=epoch)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
         optimizer.step()
@@ -46,7 +46,7 @@ def train_one_epoch(model, loader, optimizer, loss_fn, device):
 
 
 @torch.no_grad()
-def evaluate(model, loader, loss_fn, device):
+def evaluate(model, loader, loss_fn, device, epoch=999):
     """通用评估函数, 供 validation 和 test 共用"""
     model.eval()
     total_loss, total_mse_mm, n = 0.0, 0.0, 0
@@ -59,7 +59,7 @@ def evaluate(model, loader, loss_fn, device):
             data.to(device), coords_norm.to(device), cls_labels.to(device))
 
         reg_out, cls_logits, edge_attn = model(data)
-        loss, _ = loss_fn(reg_out, cls_logits, edge_attn, coords_norm, cls_labels)
+        loss, _ = loss_fn(reg_out, cls_logits, edge_attn, coords_norm, cls_labels, epoch=epoch)
 
         pred_cls = cls_logits.argmax(1)
         correct += (pred_cls == cls_labels).sum().item()
@@ -132,8 +132,8 @@ def main():
 
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
-        tl, tr = train_one_epoch(model, train_ld, optimizer, loss_fn, device)
-        vl, vr, va, _ = evaluate(model, val_ld, loss_fn, device)
+        tl, tr = train_one_epoch(model, train_ld, optimizer, loss_fn, device, epoch)
+        vl, vr, va, _ = evaluate(model, val_ld, loss_fn, device, epoch)
         scheduler.step()
 
         t_losses.append(tl); v_losses.append(vl)

@@ -80,7 +80,7 @@ EDGE_DIM = 64
 NODE_DIM = 128
 
 # 数据增强 (小样本高倍增强, 物理约束)
-AUGMENT_REPEAT = 100     # 12 样本 × 100 = 1200 训练样本/epoch
+AUGMENT_REPEAT = 20      # 9 train × 20 = 180 样本/epoch (45 batches, ~70s/epoch)
 NOISE_STD = 0.08         # 增强抗底噪能力
 SCALE_RANGE = (0.7, 1.3) # 模拟耦合差异
 TIME_SHIFT_MAX = 30      # 严格受限: 30pts × 0.3mm/pt = 9mm < 91mm/2 九宫格半宽
