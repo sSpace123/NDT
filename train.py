@@ -14,12 +14,7 @@ from loss import PINNLoss
 from vis import plot_training_curves, plot_localization_scatter, plot_attention_topology
 
 
-# ========================================
-# 训练核心 (纯回归, 无分类)
-# ========================================
-
 def train_one_epoch(model, loader, optimizer, loss_fn, device):
-    """训练一个 Epoch, 返回 (avg_loss, rmse_mm)"""
     model.train()
     total_loss, total_mse_mm, n = 0.0, 0.0, 0
 
@@ -46,56 +41,40 @@ def train_one_epoch(model, loader, optimizer, loss_fn, device):
 
 @torch.no_grad()
 def evaluate(model, loader, loss_fn, device):
-    """评估: 返回 (loss, rmse, mae, sr10, sr20, results_dict)"""
     model.eval()
     total_loss, n = 0.0, 0
     all_preds, all_targets, all_attns = [], [], []
 
     for data, coords_norm in loader:
         data, coords_norm = data.to(device), coords_norm.to(device)
-
         reg_out, edge_attn = model(data)
         loss, _ = loss_fn(reg_out, edge_attn, coords_norm)
 
-        p_mm = denormalize_coord(reg_out.cpu().numpy())
-        t_mm = denormalize_coord(coords_norm.cpu().numpy())
-
+        all_preds.append(denormalize_coord(reg_out.cpu().numpy()))
+        all_targets.append(denormalize_coord(coords_norm.cpu().numpy()))
+        all_attns.append(edge_attn.cpu().numpy())
         total_loss += loss.item()
         n += 1
 
-        all_preds.append(p_mm)
-        all_targets.append(t_mm)
-        all_attns.append(edge_attn.cpu().numpy())
+    preds = np.concatenate(all_preds)
+    targets = np.concatenate(all_targets)
+    attns = np.concatenate(all_attns)
+    errors = np.linalg.norm(preds - targets, axis=1)
 
-    all_preds = np.concatenate(all_preds)
-    all_targets = np.concatenate(all_targets)
-    all_attns = np.concatenate(all_attns)
-    errors = np.linalg.norm(all_preds - all_targets, axis=1)
-
-    mae = np.mean(errors)
-    rmse = np.sqrt(np.mean(errors ** 2))
-    sr10 = np.mean(errors < 10.0) * 100  # <10mm 成功率
-    sr20 = np.mean(errors < 20.0) * 100  # <20mm 成功率
-
-    results = {
-        'preds': all_preds,
-        'targets': all_targets,
-        'edge_attns': all_attns,
-        'errors': errors,
+    return total_loss / max(n, 1), {
+        'rmse': np.sqrt(np.mean(errors ** 2)),
+        'mae': np.mean(errors),
+        'sr20': np.mean(errors < 20.0) * 100,
+        'sr10': np.mean(errors < 10.0) * 100,
+        'preds': preds, 'targets': targets,
+        'errors': errors, 'edge_attns': attns,
     }
-    return total_loss / max(n, 1), rmse, mae, sr10, sr20, results
 
-
-# ========================================
-# 训测一体入口
-# ========================================
 
 def main():
-    parser = argparse.ArgumentParser(description='GNN-SHM 纯回归训练')
+    parser = argparse.ArgumentParser(description='GNN-SHM Geometric PINN Training')
     parser.add_argument('--epochs', type=int, default=EPOCHS)
     parser.add_argument('--lr', type=float, default=LEARNING_RATE)
-    parser.add_argument('--lambda_reg', type=float, default=LAMBDA_REG)
-    parser.add_argument('--lambda_phys', type=float, default=LAMBDA_PHYS)
     parser.add_argument('--save_dir', type=str, default=SAVE_DIR)
     parser.add_argument('--device', type=str, default='auto')
     args = parser.parse_args()
@@ -104,102 +83,84 @@ def main():
         'cuda' if args.device == 'auto' and torch.cuda.is_available()
         else args.device if args.device != 'auto' else 'cpu')
     print(f"Device: {device}")
-
     os.makedirs(args.save_dir, exist_ok=True)
 
-    # ============ 数据加载 ============
     train_ld, val_ld, test_ld = get_dataloaders()
     print(f"Batches: train={len(train_ld)} val={len(val_ld)} test={len(test_ld)}")
 
     model = PINNDamageLocator().to(device)
-    params = sum(p.numel() for p in model.parameters())
-    print(f"Model params: {params:,}")
-
-    loss_fn = PINNLoss(lambda_reg=args.lambda_reg, lambda_phys=args.lambda_phys)
+    loss_fn = PINNLoss().to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=args.epochs, eta_min=1e-6)
 
+    params = sum(p.numel() for p in model.parameters())
+    print(f"Model params: {params:,}")
+
     t_losses, v_losses, t_rmses, v_rmses = [], [], [], []
     best_rmse = float('inf')
 
-    # ============ 训练循环 ============
-    print(f"\n{'Ep':>4} {'Loss':>8} {'TrRMSE':>8} {'VaLoss':>8} {'VaRMSE':>8} "
-          f"{'MAE':>7} {'<20mm':>6} {'Time':>6}")
+    print(f"\n{'Ep':>4} {'Loss':>8} {'TrRMSE':>8} {'VaLoss':>8} "
+          f"{'VaRMSE':>8} {'MAE':>7} {'<20mm':>6} {'Time':>6}")
     print("-" * 66)
 
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
         tl, tr = train_one_epoch(model, train_ld, optimizer, loss_fn, device)
-        vl, vr, vmae, _, vsr20, _ = evaluate(model, val_ld, loss_fn, device)
+        vl, vr = evaluate(model, val_ld, loss_fn, device)
         scheduler.step()
 
         t_losses.append(tl); v_losses.append(vl)
-        t_rmses.append(tr); v_rmses.append(vr)
+        t_rmses.append(tr); v_rmses.append(vr['rmse'])
 
         mark = ""
-        if vr < best_rmse:
-            best_rmse = vr
+        if vr['rmse'] < best_rmse:
+            best_rmse = vr['rmse']
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'val_rmse': vr,
+                'val_rmse': best_rmse,
             }, os.path.join(args.save_dir, 'best_model.pt'))
             mark = " *"
 
-        print(f"{epoch:4d} {tl:8.4f} {tr:7.1f}mm {vl:8.4f} {vr:7.1f}mm "
-              f"{vmae:6.1f}mm {vsr20:5.1f}% {time.time()-t0:5.1f}s{mark}")
+        print(f"{epoch:4d} {tl:8.4f} {tr:7.1f}mm {vl:8.4f} {vr['rmse']:7.1f}mm "
+              f"{vr['mae']:6.1f}mm {vr['sr20']:5.1f}% {time.time()-t0:5.1f}s{mark}")
 
     print(f"\nTraining done. Best Val RMSE: {best_rmse:.1f}mm")
 
-    # ============ 训练曲线 ============
     plot_training_curves(t_losses, v_losses, t_rmses, v_rmses,
                          save_path=os.path.join(args.save_dir, 'training_curves.png'))
 
-    # ============ 加载 Best Model → 测试集 ============
-    print("\n--- Auto-Evaluating Best Model on Test Set ---")
+    # ============ 加载 Best Model → 测试 ============
+    print("\n--- Test Set Evaluation ---")
     ck = torch.load(os.path.join(args.save_dir, 'best_model.pt'),
                     map_location=device, weights_only=False)
     model.load_state_dict(ck['model_state_dict'])
-    print(f"Loaded best model from epoch {ck['epoch']} (val_rmse={ck['val_rmse']:.1f}mm)")
+    print(f"Loaded best model from epoch {ck['epoch']}")
 
-    _, test_rmse, test_mae, test_sr10, test_sr20, test_res = \
-        evaluate(model, test_ld, loss_fn, device)
-    errors = test_res['errors']
+    _, res = evaluate(model, test_ld, loss_fn, device)
 
-    print(f"\n{'='*55}")
-    print(f"  TEST RESULTS ({len(errors)} samples)")
-    print(f"{'='*55}")
-    print(f"  MAE                : {test_mae:.2f} mm")
-    print(f"  RMSE               : {test_rmse:.2f} mm")
-    print(f"  Max Error          : {np.max(errors):.2f} mm")
-    print(f"  Success Rate <10mm : {test_sr10:.1f}%")
-    print(f"  Success Rate <20mm : {test_sr20:.1f}%")
-    print(f"{'='*55}")
+    print(f"\n{'='*50}")
+    print(f"  TEST ({len(res['errors'])} samples)")
+    print(f"{'='*50}")
+    print(f"  MAE          : {res['mae']:.2f} mm")
+    print(f"  RMSE         : {res['rmse']:.2f} mm")
+    print(f"  Max Error    : {np.max(res['errors']):.2f} mm")
+    print(f"  SR <10mm     : {res['sr10']:.1f}%")
+    print(f"  SR <20mm     : {res['sr20']:.1f}%")
+    print(f"{'='*50}")
 
-    # 逐样本明细
-    for i in range(len(errors)):
-        gt_xy = f"({test_res['targets'][i,0]:6.1f}, {test_res['targets'][i,1]:6.1f})"
-        pd_xy = f"({test_res['preds'][i,0]:6.1f}, {test_res['preds'][i,1]:6.1f})"
-        ok = "OK" if errors[i] < 20.0 else "X"
-        print(f"  #{i} GT{gt_xy} Pred{pd_xy} Err={errors[i]:.1f}mm [{ok}]")
+    for i, e in enumerate(res['errors']):
+        gt = f"({res['targets'][i,0]:6.1f}, {res['targets'][i,1]:6.1f})"
+        pd = f"({res['preds'][i,0]:6.1f}, {res['preds'][i,1]:6.1f})"
+        print(f"  #{i} GT{gt} Pred{pd} Err={e:.1f}mm")
 
-    # 散点图
-    scatter_path = os.path.join(args.save_dir, 'test_scatter.png')
     plot_localization_scatter(
-        test_res['targets'], test_res['preds'],
-        mae=test_mae, sr20=test_sr20,
-        save_path=scatter_path, show=True)
-    print(f"\n[SAVED] {scatter_path}")
-
-    # Attention 拓扑图
-    attn_path = os.path.join(args.save_dir, 'test_attention.png')
-    mean_attn = np.mean(test_res['edge_attns'], axis=0)
+        res['targets'], res['preds'], mae=res['mae'], sr20=res['sr20'],
+        save_path=os.path.join(args.save_dir, 'test_scatter.png'), show=True)
     plot_attention_topology(
-        mean_attn, model.gnn.edges,
-        save_path=attn_path, show=True)
-    print(f"[SAVED] {attn_path}")
+        np.mean(res['edge_attns'], axis=0), model.gnn.edges,
+        save_path=os.path.join(args.save_dir, 'test_attention.png'), show=True)
 
 
 if __name__ == '__main__':

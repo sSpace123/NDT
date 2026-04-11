@@ -5,88 +5,86 @@ import numpy as np
 from config import SENSOR_COORDS, NUM_NODES, EDGE_DIM, NODE_DIM, IN_CHANNELS
 
 
-# ========================================
-# 纯回归架构: EdgeCNN -> BipartiteGNN -> 坐标回归 (无分类头)
-# ========================================
-
-class SEBlock(nn.Module):
-    """Squeeze-and-Excitation 通道注意力"""
-    def __init__(self, channels, reduction=4):
-        super().__init__()
-        self.fc1 = nn.Linear(channels, channels // reduction)
-        self.fc2 = nn.Linear(channels // reduction, channels)
-
-    def forward(self, x):
-        b, c, _, _ = x.size()
-        y = F.adaptive_avg_pool2d(x, 1).view(b, c)
-        y = torch.sigmoid(self.fc2(F.relu(self.fc1(y)))).view(b, c, 1, 1)
-        return x * y
-
-
 class EdgeCNN(nn.Module):
-    """2D CNN + SE: [B, 4, 32, 2048] -> [B, edge_dim]
-    时间轴保护: 使用 AdaptiveMaxPool2d((1,8)) 保留 8 个时间窗口,
-    维持声波到达时间差 (ToF) 和相位信息, 而非全局池化抹杀时序"""
+    """时序保护的边特征提取器: [B, 4, 32, 2048] -> [B, edge_dim]
+
+    架构设计 (对比旧版 AdaptiveAvgPool2d 的改进):
+      Step 1: 2D Conv 压缩频率维度 (32→1), 提取通道-频率交叉特征
+      Step 2: 1D AvgPool 在时间轴平滑降维 (2048→128), 保留相对飞行时间 (ToF)
+      Step 3: GAP 全局平均池化 + Linear 输出 edge_dim
+    """
     def __init__(self, in_channels=IN_CHANNELS, out_channels=EDGE_DIM):
         super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(in_channels, 16, 3, padding=1, stride=(1, 2)),
-            nn.BatchNorm2d(16), nn.ReLU(inplace=True), nn.MaxPool2d(2),
-            SEBlock(16),
-            nn.Conv2d(16, 32, 3, padding=1, stride=(1, 2)),
-            nn.BatchNorm2d(32), nn.ReLU(inplace=True), nn.MaxPool2d(2),
-            SEBlock(32),
-            nn.Conv2d(32, 64, 3, padding=1, stride=(1, 2)),
-            nn.BatchNorm2d(64), nn.ReLU(inplace=True),
-            nn.AdaptiveMaxPool2d((1, 8)),  # 保留 8 个时间窗口
+        # Step 1: 2D Conv 逐步压缩频率维度, 保留时间轴
+        self.conv2d = nn.Sequential(
+            nn.Conv2d(in_channels, 32, 3, padding=1, stride=(2, 1)),  # freq: 32→16
+            nn.BatchNorm2d(32), nn.ReLU(),
+            nn.Conv2d(32, 64, 3, padding=1, stride=(2, 1)),          # freq: 16→8
+            nn.BatchNorm2d(64), nn.ReLU(),
+            nn.Conv2d(64, 64, (8, 1)),                                # freq: 8→1, 彻底折叠频率
+            nn.ReLU(),
         )
-        self.fc = nn.Linear(64 * 1 * 8, out_channels)  # 512 -> edge_dim
+        # Step 2: 1D AvgPool 平滑降维时间轴, 保留 ToF 相对结构
+        self.time_pool = nn.AvgPool1d(kernel_size=16, stride=16)     # 2048→128
+        # Step 3: GAP + Linear
+        self.fc = nn.Linear(64, out_channels)
 
     def forward(self, x):
-        x = self.conv(x).flatten(1)
-        return F.relu(self.fc(x))
+        B = x.size(0)
+        x = self.conv2d(x)              # [B, 64, 1, 2048]
+        assert x.size(2) == 1, f"频率维未折叠: {x.shape}"
+        x = x.squeeze(2)                # [B, 64, 2048]
+        x = self.time_pool(x)           # [B, 64, 128] 保留 ToF 时序结构
+        x = x.mean(dim=2)               # [B, 64] GAP
+        return F.relu(self.fc(x))        # [B, edge_dim]
 
 
 class BipartiteGNN(nn.Module):
-    """
-    36-edge 二分图: 左侧 0~5 -> 右侧 6~11.
-    物理先验 (距离倒数) + 数据驱动 MLP → softmax → 加权聚合
+    """36-edge 二分图: 左侧 0~5 → 右侧 6~11
+
+    注意力设计 (对比旧版 softmax 的改进):
+      - sigmoid 独立激活: 每条边独立 [0,1], 支持多边同时高权重 (物理协同)
+      - softmax 会强制 Σ=1, 导致边之间零和竞争, 与多路径定位矛盾
+      - 距离倒数先验 prior_w 作为简单偏置, 无需 MLP
     """
     def __init__(self, num_nodes=NUM_NODES, edge_dim=EDGE_DIM, node_dim=NODE_DIM):
         super().__init__()
         self.num_nodes = num_nodes
 
+        # 构建二分图边表
         self.edges = []
         for i in range(12):
             for j in range(i + 1, 12):
                 if i < 6 and j >= 6:
                     self.edges.append((i, j))
-        self.num_edges = len(self.edges)
+        assert len(self.edges) == 36
 
-        # 物理先验: 距离倒数, 可学习
-        init_logits = []
+        # 物理先验: 距离倒数偏置 (可学习)
+        init_bias = []
         for (i, j) in self.edges:
             dist = np.linalg.norm(SENSOR_COORDS[i] - SENSOR_COORDS[j])
-            init_logits.append(1.0 / (dist + 1e-8))
-        self.prior_w = nn.Parameter(torch.tensor(init_logits, dtype=torch.float32))
+            init_bias.append(1.0 / (dist + 1e-8))
+        self.prior_w = nn.Parameter(torch.tensor(init_bias, dtype=torch.float32))
 
-        # 数据驱动注意力 MLP
-        self.attn_mlp = nn.Sequential(
-            nn.Linear(edge_dim, edge_dim // 2),
-            nn.ReLU(inplace=True),
-            nn.Linear(edge_dim // 2, 1),
-        )
+        # 极简注意力: 单层 Linear (无 MLP)
+        self.attn_linear = nn.Linear(edge_dim, 1)
 
+        # 边→节点投影
         self.edge_to_node = nn.Linear(edge_dim, node_dim)
 
     def forward(self, edge_feats):
+        """
+        edge_feats: [B, 36, edge_dim]
+        Returns: node_feats [B, 12, node_dim], edge_attn [B, 36]
+        """
         B, E, D = edge_feats.size()
 
-        data_logits = self.attn_mlp(edge_feats).squeeze(-1)
-        prior_logits = self.prior_w.unsqueeze(0)
-        edge_attn = F.softmax(data_logits + prior_logits, dim=1)
+        # 独立 sigmoid 注意力: 数据 logit + 物理偏置
+        logits = self.attn_linear(edge_feats).squeeze(-1) + self.prior_w  # [B, 36]
+        edge_attn = torch.sigmoid(logits)  # [B, 36] 每条边独立 0~1
 
-        weighted = edge_feats * edge_attn.unsqueeze(-1)
+        # 加权聚合到节点
+        weighted = edge_feats * edge_attn.unsqueeze(-1)  # [B, 36, D]
 
         node_feats = torch.zeros(B, self.num_nodes, D, device=edge_feats.device)
         for idx, (u, v) in enumerate(self.edges):
@@ -99,22 +97,20 @@ class BipartiteGNN(nn.Module):
 
 
 class PINNDamageLocator(nn.Module):
-    """
-    纯回归模型: EdgeCNN -> BipartiteGNN -> 坐标回归
-    Input:  [B, 36, 4, 32, 2048]
-    Output: reg_out [B, 2] (归一化坐标), edge_attn [B, 36]
-    注: 无分类头, 无 log_var, 纯粹连续空间坐标回归
-    """
+    """纯回归定位模型: EdgeCNN → BipartiteGNN → 坐标回归
+    Output: reg_out [B, 2], edge_attn [B, 36]"""
+
     def __init__(self, in_channels=IN_CHANNELS, edge_dim=EDGE_DIM,
                  node_dim=NODE_DIM, num_nodes=NUM_NODES):
         super().__init__()
         self.edge_cnn = EdgeCNN(in_channels, edge_dim)
         self.gnn = BipartiteGNN(num_nodes, edge_dim, node_dim)
-        self.reg_head = nn.Linear(node_dim, 2)  # [x, y] 纯坐标回归
+        self.reg_head = nn.Linear(node_dim, 2)
 
     def forward(self, x):
-        B, E, C, Fd, T = x.size()
-        edge_feats = self.edge_cnn(x.reshape(B * E, C, Fd, T)).view(B, E, -1)
+        B, E, C, F, T = x.size()
+        assert E == 36 and C == IN_CHANNELS
+        edge_feats = self.edge_cnn(x.reshape(B * E, C, F, T)).view(B, E, -1)
         node_feats, edge_attn = self.gnn(edge_feats)
         global_feat = node_feats.mean(dim=1)
         return self.reg_head(global_feat), edge_attn
@@ -125,4 +121,5 @@ if __name__ == '__main__':
     x = torch.randn(2, 36, 4, 32, 2048)
     reg, attn = model(x)
     print(f"reg={reg.shape}, attn={attn.shape}")
+    print(f"attn range: [{attn.min():.3f}, {attn.max():.3f}]")
     print(f"params={sum(p.numel() for p in model.parameters()):,}")

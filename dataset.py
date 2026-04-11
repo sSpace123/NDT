@@ -318,3 +318,16 @@ def get_dataloaders(data_root=DATA_ROOT):
         DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, **common),
         DataLoader(test_ds, batch_size=1, shuffle=False, **common),
     )
+
+
+if __name__ == '__main__':
+    samples = build_sample_index()
+    print(f"Found {len(samples)} samples")
+    if samples:
+        ds = NDTDataset(samples[:1], mode="test")
+        x, coord = ds[0]
+        print(f"x={x.shape}, coord={coord.shape}")
+        assert x.shape == (36, 4, 32, 2048)
+        assert coord.shape == (2,)
+        print("Dataset shape test passed")
+
