@@ -74,16 +74,16 @@ BATCH_SIZE = 4
 EPOCHS = 55
 LEARNING_RATE = 5e-4   # 降低: 225 batches/epoch 但只有 9 个物理样本
 LAMBDA_REG = 1.0
-LAMBDA_PHYS = 0.01   # 熵正则化权重 (下调以避免约束过强)
+LAMBDA_PHYS = 0.5    # L2 多边协同正则化权重 (增大以鼓励注意力分散)
 
-EDGE_DIM = 64
-NODE_DIM = 128
+EDGE_DIM = 16       # 瘦身: 12 样本无法支撑 64 维边特征
+NODE_DIM = 32       # 瘦身: 12 样本无法支撑 128 维节点特征
 
 # 数据增强 (小样本高倍增强, 物理约束)
 AUGMENT_REPEAT = 20      # 9 train × 20 = 180 样本/epoch (45 batches, ~70s/epoch)
 NOISE_STD = 0.08         # 增强抗底噪能力
 SCALE_RANGE = (0.7, 1.3) # 模拟耦合差异
-TIME_SHIFT_MAX = 30      # 严格受限: 30pts × 0.3mm/pt = 9mm < 91mm/2 九宫格半宽
+TIME_SHIFT_MAX = 5       # 极严格: 5pts × 0.3mm/pt = 1.5mm, 保护同次采样相位匹配
 SEED = 42
 
 SAVE_DIR = os.path.join(_THIS_DIR, "outputs")

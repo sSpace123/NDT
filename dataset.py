@@ -115,8 +115,9 @@ def preprocess_pair(healthy_csv, damage_csv):
     env_resp = np.abs(hilbert(diff_resp))
 
     # 峰值对齐窗口裁剪 (±1024 = 2048 点)
-    peak = np.argmax(env_resp)
-    length = len(env_resp)
+    # 以激励包络为基准对齐, 保留不同路径的相对飞行时间差 (ToF)
+    peak = np.argmax(env_exc)
+    length = len(env_exc)
     start = max(0, peak - WINDOW_HALF_SIZE)
     end = min(length, peak + WINDOW_HALF_SIZE)
     pad_l = max(0, WINDOW_HALF_SIZE - peak)

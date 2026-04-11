@@ -36,9 +36,9 @@ class EdgeCNN(nn.Module):
             SEBlock(32),
             nn.Conv2d(32, 64, 3, padding=1, stride=(1, 2)),
             nn.BatchNorm2d(64), nn.ReLU(inplace=True),
-            nn.AdaptiveAvgPool2d(1),
+            nn.AdaptiveMaxPool2d((1, 8)),  # 保留 8 个时间窗口, 维持时序分辨率
         )
-        self.fc = nn.Linear(64, out_channels)
+        self.fc = nn.Linear(64 * 1 * 8, out_channels)  # 512 -> edge_dim
 
     def forward(self, x):
         x = self.conv(x).flatten(1)
