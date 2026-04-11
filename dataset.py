@@ -312,11 +312,13 @@ def build_splits(data_root=DATA_ROOT):
 
 def get_dataloaders(data_root=DATA_ROOT):
     train_ds, val_ds, test_ds = build_splits(data_root)
-    common = dict(num_workers=4, pin_memory=True, persistent_workers=True)
+    # num_workers=0: 数据已预缓存在内存, 多进程无加速且 Windows 上易死锁
+    import torch
+    pin = torch.cuda.is_available()
     return (
-        DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, drop_last=True, **common),
-        DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, **common),
-        DataLoader(test_ds, batch_size=1, shuffle=False, **common),
+        DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, drop_last=True, pin_memory=pin),
+        DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, pin_memory=pin),
+        DataLoader(test_ds, batch_size=1, shuffle=False, pin_memory=pin),
     )
 
 
