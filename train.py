@@ -18,11 +18,13 @@ def train_one_epoch(model, loader, optimizer, loss_fn, device):
     model.train()
     total_loss, total_mse_mm, n = 0.0, 0.0, 0
 
-    for data, coords_norm in loader:
-        data, coords_norm = data.to(device), coords_norm.to(device)
+    for x_cwt, x_tab, coords_norm in loader:
+        x_cwt = x_cwt.to(device)
+        x_tab = x_tab.to(device)
+        coords_norm = coords_norm.to(device)
 
         optimizer.zero_grad()
-        reg_out, edge_attn = model(data)
+        reg_out, edge_attn = model(x_cwt, x_tab)
         loss, _ = loss_fn(reg_out, edge_attn, coords_norm)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
@@ -45,9 +47,11 @@ def evaluate(model, loader, loss_fn, device):
     total_loss, n = 0.0, 0
     all_preds, all_targets, all_attns = [], [], []
 
-    for data, coords_norm in loader:
-        data, coords_norm = data.to(device), coords_norm.to(device)
-        reg_out, edge_attn = model(data)
+    for x_cwt, x_tab, coords_norm in loader:
+        x_cwt = x_cwt.to(device)
+        x_tab = x_tab.to(device)
+        coords_norm = coords_norm.to(device)
+        reg_out, edge_attn = model(x_cwt, x_tab)
         loss, _ = loss_fn(reg_out, edge_attn, coords_norm)
 
         all_preds.append(denormalize_coord(reg_out.cpu().numpy()))

@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import numpy as np
 from config import (
     SENSOR_COORDS, NUM_NODES, EDGE_DIM, NODE_DIM, IN_CHANNELS,
-    TIME_REDUCED_LEN,
+    TIME_REDUCED_LEN, TABULAR_DIM, TABULAR_HIDDEN_DIM, FUSED_DIM
 )
 
 # 推导 1D 时间池化的 kernel_size: 2048 / TIME_REDUCED_LEN
@@ -43,14 +43,26 @@ class EdgeCNN(nn.Module):
         return F.relu(self.fc(x))        # [B, edge_dim]
 
 
-class BipartiteGNN(nn.Module):
-    """36-edge 二分图, sigmoid 独立注意力
-
-    - sigmoid: 每条边独立 [0,1], 支持多边同时高权重
-    - prior_w: 距离倒数偏置 (可学习)
-    - 单层 Linear 注意力 (无 MLP)
+class TabularEncoder(nn.Module):
     """
-    def __init__(self, num_nodes=NUM_NODES, edge_dim=EDGE_DIM, node_dim=NODE_DIM):
+    手工特征映射器: 
+    将 5 维对方差敏感的手工特征映射到 16 维隐藏空间，
+    通过非线性映射使网络能自适应调整融合权重。
+    """
+    def __init__(self, in_dim=TABULAR_DIM, out_dim=TABULAR_HIDDEN_DIM):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, out_dim),
+            nn.ReLU()
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class BipartiteGNN(nn.Module):
+    """36-edge 二分图, sigmoid 独立注意力"""
+    def __init__(self, num_nodes=NUM_NODES, edge_dim=FUSED_DIM, node_dim=NODE_DIM):
         super().__init__()
         self.num_nodes = num_nodes
 
@@ -68,6 +80,7 @@ class BipartiteGNN(nn.Module):
             init_bias.append(1.0 / (dist + 1e-8))
         self.prior_w = nn.Parameter(torch.tensor(init_bias, dtype=torch.float32))
 
+        # 修改为接收融合维度 FUSED_DIM
         self.attn_linear = nn.Linear(edge_dim, 1)
         self.edge_to_node = nn.Linear(edge_dim, node_dim)
 
@@ -87,27 +100,45 @@ class BipartiteGNN(nn.Module):
 
 
 class PINNDamageLocator(nn.Module):
-    """纯回归: EdgeCNN → BipartiteGNN → [B, 2] 坐标"""
+    """融合模型架构: (EdgeCNN + TabularEncoder) → Cat → BipartiteGNN → reg_head"""
 
     def __init__(self, in_channels=IN_CHANNELS, edge_dim=EDGE_DIM,
                  node_dim=NODE_DIM, num_nodes=NUM_NODES):
         super().__init__()
         self.edge_cnn = EdgeCNN(in_channels, edge_dim)
-        self.gnn = BipartiteGNN(num_nodes, edge_dim, node_dim)
+        self.tab_encoder = TabularEncoder()
+        
+        # 此时 BipartiteGNN 接收的是融合后的维度 FUSED_DIM
+        self.gnn = BipartiteGNN(num_nodes, FUSED_DIM, node_dim)
         self.reg_head = nn.Linear(node_dim, 2)
 
-    def forward(self, x):
-        B, E, C, Fd, T = x.size()
+    def forward(self, x_cwt, x_tab):
+        """
+        x_cwt: [B, 36, 4, 32, 2048]
+        x_tab: [B, 36, 5]
+        """
+        B, E, C, Fd, T = x_cwt.size()
         assert E == 36 and C == IN_CHANNELS
-        edge_feats = self.edge_cnn(x.reshape(B * E, C, Fd, T)).view(B, E, -1)
-        node_feats, edge_attn = self.gnn(edge_feats)
+        
+        # 1. 深度图像特征提取 (CWT)
+        cwt_emb = self.edge_cnn(x_cwt.reshape(B * E, C, Fd, T)).view(B, E, -1)  # [B, 36, 64]
+        
+        # 2. 手工特征映射 (Tabular)
+        tab_emb = self.tab_encoder(x_tab)  # [B, 36, 16]
+        
+        # 3. 强融合拼接
+        fused_feats = torch.cat([cwt_emb, tab_emb], dim=-1)  # [B, 36, 80]
+        
+        # 4. GNN与注意力机制
+        node_feats, edge_attn = self.gnn(fused_feats)
         return self.reg_head(node_feats.mean(dim=1)), edge_attn
 
 
 if __name__ == '__main__':
     model = PINNDamageLocator()
-    x = torch.randn(2, 36, 4, 32, 2048)
-    reg, attn = model(x)
+    x_c = torch.randn(2, 36, 4, 32, 2048)
+    x_t = torch.randn(2, 36, TABULAR_DIM)
+    reg, attn = model(x_c, x_t)
     print(f"reg={reg.shape}, attn={attn.shape}")
     print(f"attn range: [{attn.min():.3f}, {attn.max():.3f}]")
     print(f"params={sum(p.numel() for p in model.parameters()):,}")

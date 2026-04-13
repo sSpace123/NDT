@@ -41,11 +41,12 @@ def main():
     loss_fn = GeometricPINNLoss()
     all_preds, all_targets, all_attns = [], [], []
 
-    for data, coords_norm in test_loader:
-        data = data.to(device)
+    for x_cwt, x_tab, coords_norm in test_loader:
+        x_cwt = x_cwt.to(device)
+        x_tab = x_tab.to(device)
         coords_norm = coords_norm.to(device)
 
-        reg_out, edge_attn = model(data)
+        reg_out, edge_attn = model(x_cwt, x_tab)
 
         p_mm = denormalize_coord(reg_out.cpu().numpy())
         t_mm = denormalize_coord(coords_norm.cpu().numpy())

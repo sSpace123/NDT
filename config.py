@@ -35,7 +35,6 @@ COORD_RANGE = COORD_MAX - COORD_MIN  # 275.0
 
 # 几何 PINN 物理参数
 DEAD_ZONE_R = 10.0   # 带状容忍度半径 (mm): 预测点在路径 ±R mm 范围内不受惩罚
-                      # 物理含义: 导波散射区域的有效宽度 (而非理想化的一维射线)
 
 
 def normalize_coord(coord):
@@ -65,13 +64,16 @@ WAVELET_NAME = 'db4'
 WAVELET_LEVEL = 4
 
 # ========================================
-# 3. 网络架构参数
+# 3. 网络架构参数 (含多特征融合)
 # ========================================
 
-EDGE_DIM = 16             # 边特征维度 (极简: 12 样本)
+EDGE_DIM = 64             # EdgeCNN CWT 特征输出维度
+TABULAR_DIM = 5           # 手工特征维度 (互相关, 包络ToF, 信号总能量, 包络能量, 高频能量)
+TABULAR_HIDDEN_DIM = 16   # 手工特征映射维度
+FUSED_DIM = EDGE_DIM + TABULAR_HIDDEN_DIM  # 融合维度 (64 + 16 = 80)
+
 NODE_DIM = 32             # 节点特征维度
 TIME_REDUCED_LEN = 128    # 1D 时间轴降维目标长度 (2048 / 16 = 128)
-                          # 控制 AvgPool1d 的 kernel_size = 2048 / TIME_REDUCED_LEN
 
 # ========================================
 # 4. 训练与 Loss 参数
@@ -83,7 +85,7 @@ LEARNING_RATE = 5e-4
 LAMBDA_REG = 1.0          # MSE 坐标回归损失权重
 LAMBDA_PHYS = 0.5         # 几何 PINN 物理正则化权重
 
-# 数据增强 (小样本, 物理约束)
+# 数据增强
 AUGMENT_REPEAT = 20
 NOISE_STD = 0.08
 SCALE_RANGE = (0.7, 1.3)
