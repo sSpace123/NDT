@@ -2,7 +2,7 @@ import os
 import numpy as np
 import torch
 import argparse
-from config import SAVE_DIR, denormalize_coord
+from config import SAVE_DIR
 from dataset import get_dataloaders
 from model import PINNDamageLocator
 from loss import GeometricPINNLoss

@@ -3,10 +3,10 @@ import glob
 import re
 import numpy as np
 import pandas as pd
+import scipy.signal as signal
 import pywt
 import torch
 from torch.utils.data import Dataset, DataLoader
-from scipy.signal import butter, filtfilt, hilbert
 from collections import defaultdict
 import warnings
 
@@ -16,7 +16,7 @@ from config import (
     DATA_ROOT, REGION_DIRS, DAMAGE_CENTERS,
     NUM_PAIRS, CSV_HEADER_LINES,
     WINDOW_HALF_SIZE, IN_CHANNELS, BATCH_SIZE, SEED, normalize_coord,
-    AUGMENT_REPEAT, NOISE_STD, SCALE_RANGE, TIME_SHIFT_MAX,
+    AUGMENT_REPEAT, SCALE_RANGE, TIME_SHIFT_MAX,
     FS, FC, WAVELET_NAME, WAVELET_LEVEL, TABULAR_DIM,
 )
 
@@ -35,14 +35,14 @@ assert len(BIPARTITE_INDICES) == 36
 NUM_BIPARTITE_EDGES = 36
 
 # ========================================
-# 信号预处理与 CWT / TABULAR 特征提取
+# DSP 信号处理与特征提取
 # ========================================
 
 def _butter_bandpass(data, lowcut, highcut, fs, order=4):
     """四阶 Butterworth 带通滤波"""
     nyq = 0.5 * fs
-    b, a = butter(order, [lowcut / nyq, highcut / nyq], btype='band')
-    return filtfilt(b, a, data)
+    b, a = signal.butter(order, [lowcut / nyq, highcut / nyq], btype='band')
+    return signal.filtfilt(b, a, data)
 
 
 def _wavelet_denoise(data):
@@ -67,11 +67,60 @@ def _get_cwt(data):
     return np.abs(cwtmatr)
 
 
+def extract_physical_features(baseline_sig, damaged_sig):
+    """
+    独立内聚的 DSP 收敛特征提取
+    提取 5 维物理敏感手工特征:
+      (1) 互相关系数: baseline_sig 与 damaged_sig 的最大归一化互相关系数
+      (2) 包络 ToF: 差分信号的 Hilbert 包络的最大值出现时间点 (索引)
+      (3) 信号总能量: 差分信号的平方和
+      (4) 包络能量: 差分信号 Hilbert 包络的平方和
+      (5) 小波高频能量: db4 单层小波分解后细节系数(cD)平方和
+    """
+    # 防御性对齐
+    min_len = min(len(baseline_sig), len(damaged_sig))
+    base = baseline_sig[:min_len]
+    dmg = damaged_sig[:min_len]
+    diff_sig = dmg - base
+
+    # 1. 最大归一化互相关系数
+    norm_factor = np.linalg.norm(base) * np.linalg.norm(dmg)
+    if norm_factor > 1e-12:
+        # np.corrcoef 也可以直接作为均值标准化的相似度,
+        # 这里严格根据信号内积使用 np.correlate 求滑动满相关最大值
+        xcorr = signal.correlate(dmg, base, mode='same')
+        cc = np.max(xcorr) / norm_factor
+    else:
+        cc = 0.0
+
+    # 2. 信号总能量
+    tot_e = float(np.sum(diff_sig ** 2))
+
+    # 3 & 4. Hilbert 包络计算 ToF 和包络能量
+    # 包络异常防护
+    if np.max(np.abs(diff_sig)) < 1e-12:
+        tof = 0.0
+        env_e = 0.0
+    else:
+        env = np.abs(signal.hilbert(diff_sig))
+        tof = float(np.argmax(env))
+        env_e = float(np.sum(env ** 2))
+
+    # 5. 小波高频细节能量
+    try:
+        cA, cD = pywt.dwt(diff_sig, 'db4')
+        hf_e = float(np.sum(cD ** 2))
+    except Exception:
+        hf_e = 0.0
+
+    feats = np.array([cc, tof, tot_e, env_e, hf_e], dtype=np.float32)
+    return np.nan_to_num(feats, nan=0.0)
+
+
 def preprocess_pair(healthy_csv, damage_csv):
     """
-    提取图像与标量双模态特征:
-    1. CWT 图 (用于 EdgeCNN) -> [4, 32, 2048]
-    2. Tabular 手工特征 -> [5]
+    单路径预处理管道：
+    加载 -> 滤波去噪 -> (提 5 维 DSP 特征) -> 截断 2048 长度 -> (提 CWT 画像)
     """
     try:
         base_df = pd.read_csv(healthy_csv, skiprows=CSV_HEADER_LINES,
@@ -96,6 +145,10 @@ def preprocess_pair(healthy_csv, damage_csv):
     dmg_exc = np.nan_to_num(dmg_df["excitation"].values[:min_len], nan=0.0).astype(np.float32)
     dmg_resp = np.nan_to_num(dmg_df["response"].values[:min_len], nan=0.0).astype(np.float32)
 
+    # 计算 5 维物理敏感手工特征 (在全长信号与滤波前直接计算，最真实的保留原始物理意义)
+    tabular_feats = extract_physical_features(base_resp, dmg_resp)
+
+    # 开始准备 CWT
     diff_exc = dmg_exc - base_exc
     diff_resp = dmg_resp - base_resp
 
@@ -105,22 +158,8 @@ def preprocess_pair(healthy_csv, damage_csv):
     diff_exc = _wavelet_denoise(diff_exc)
     diff_resp = _wavelet_denoise(diff_resp)
 
-    env_exc = np.abs(hilbert(diff_exc))
-    env_resp = np.abs(hilbert(diff_resp))
-
-    # ---- 新增: 提取 5 维手工特征 (Tabular) ----
-    try:
-        cc = float(np.corrcoef(env_exc, env_resp)[0, 1]) if np.std(env_resp) > 0 else 0.0
-        if np.isnan(cc): cc = 0.0
-    except Exception:
-        cc = 0.0
-    tof = float(np.argmax(env_resp) - np.argmax(env_exc))
-    tot_e = float(np.sum(diff_resp ** 2))
-    env_e = float(np.sum(env_resp ** 2))
-    hf_e = float(np.sum(np.abs(np.diff(diff_resp))))
-
-    tab_feats = np.array([cc, tof, tot_e, env_e, hf_e], dtype=np.float32)
-    tab_feats = np.nan_to_num(tab_feats, nan=0.0)
+    env_exc = np.abs(signal.hilbert(diff_exc))
+    env_resp = np.abs(signal.hilbert(diff_resp))
 
     # ---- 窗口裁剪: 用于 CWT ----
     peak = np.argmax(env_exc)
@@ -140,7 +179,7 @@ def preprocess_pair(healthy_csv, damage_csv):
         _get_cwt(_crop_pad(env_resp)),
     ], axis=0).astype(np.float32)
 
-    return np.nan_to_num(tensor_cwt), tab_feats
+    return np.nan_to_num(tensor_cwt), tabular_feats
 
 
 # ========================================
@@ -175,7 +214,7 @@ def build_sample_index(data_root=DATA_ROOT):
 
 
 # ========================================
-# Dataset — 混合输入, 返回 (x_cwt, x_tab, coord_norm)
+# Dataset — 预处理内存缓存及 Z-Score 全局防泄露
 # ========================================
 
 class NDTDataset(Dataset):
@@ -184,8 +223,10 @@ class NDTDataset(Dataset):
         self.mode = mode
         self.repeat = AUGMENT_REPEAT if mode == "train" else 1
 
-        self.data_cache = {}
-        self.tab_cache = {}
+        self.data_cache = {}                   # 缓存 CWT 特征 (归一化后)
+        self.raw_tab_cache = {}                 # 缓存 Tabular 原始特征 (增强前)
+        self.tab_cache = {}                     # 缓存 Tabular 特征 (归一化后, 非 train 用)
+
         print(f"  [{mode}] {len(sample_index)} samples, extracting CWT & Tabular features...")
         for idx, (ri, tag, dmg_files, healthy_files) in enumerate(self.samples):
             cwt_list, tab_list = [], []
@@ -193,15 +234,18 @@ class NDTDataset(Dataset):
                 c, t = preprocess_pair(healthy_files[pi], dmg_files[pi])
                 cwt_list.append(c)
                 tab_list.append(t)
-            self.data_cache[idx] = np.stack(cwt_list, axis=0) # [36, 4, 32, 2048]
-            self.tab_cache[idx] = np.stack(tab_list, axis=0)  # [36, 5]
+            self.data_cache[idx] = np.stack(cwt_list, axis=0)    # [36, 4, 32, 2048]
+            self.raw_tab_cache[idx] = np.stack(tab_list, axis=0) # [36, 5] 原始物理值
 
-        # 独立进行 Z-score 归一化
+        # -------------------------------------------------------------
+        # Z-score 归一化统计量 (防数据泄露)
+        # Val/Test 强制使用 Train 的统计量
+        # -------------------------------------------------------------
         if global_stats is not None:
             self.g_mean_c, self.g_std_c, self.g_mean_t, self.g_std_t = global_stats
         elif mode == "train" and len(self.samples) > 0:
             all_c = np.stack(list(self.data_cache.values()))
-            all_t = np.stack(list(self.tab_cache.values()))
+            all_t = np.stack(list(self.raw_tab_cache.values()))
             self.g_mean_c = np.mean(all_c, axis=(0, 1, 3, 4), keepdims=False)
             self.g_std_c = np.std(all_c, axis=(0, 1, 3, 4), keepdims=False) + 1e-8
             self.g_mean_t = np.mean(all_t, axis=(0, 1), keepdims=False)
@@ -212,17 +256,23 @@ class NDTDataset(Dataset):
             self.g_mean_t = np.zeros(TABULAR_DIM, dtype=np.float32)
             self.g_std_t = np.ones(TABULAR_DIM, dtype=np.float32)
 
+        # CWT 归一化 (直接覆写缓存, CWT 增强只做空间操作不影响统计量)
         mc = self.g_mean_c[np.newaxis, :, np.newaxis, np.newaxis]
         sc = self.g_std_c[np.newaxis, :, np.newaxis, np.newaxis]
-        mt = self.g_mean_t[np.newaxis, :]
-        st = self.g_std_t[np.newaxis, :]
-        
         for idx in range(len(self.samples)):
             n_c = (self.data_cache[idx] - mc) / sc
-            n_t = (self.tab_cache[idx] - mt) / st
             self.data_cache[idx] = np.clip(n_c, -10, 10).astype(np.float32)
-            self.tab_cache[idx] = np.clip(n_t, -10, 10).astype(np.float32)
 
+        # Tabular: train 模式保留原始值用于增强后再归一化;
+        # val/test 模式直接归一化缓存
+        if mode != "train":
+            mt = self.g_mean_t[np.newaxis, :]
+            st = self.g_std_t[np.newaxis, :]
+            for idx in range(len(self.samples)):
+                n_t = (self.raw_tab_cache[idx] - mt) / st
+                self.tab_cache[idx] = np.clip(n_t, -10, 10).astype(np.float32)
+
+        # 回归标签
         self.coords = []
         for ri, tag, _, _ in self.samples:
             self.coords.append(normalize_coord(DAMAGE_CENTERS[ri]))
@@ -233,20 +283,28 @@ class NDTDataset(Dataset):
     def __len__(self):
         return len(self.samples) * self.repeat
 
+    def _normalize_tab(self, raw_tab):
+        """对原始 tabular 特征做 Z-score 归一化"""
+        mt = self.g_mean_t[np.newaxis, :]
+        st = self.g_std_t[np.newaxis, :]
+        return np.clip((raw_tab - mt) / st, -10, 10).astype(np.float32)
+
     def __getitem__(self, idx):
         real_idx = idx % len(self.samples)
         s_cwt = self.data_cache[real_idx].copy()
-        s_tab = self.tab_cache[real_idx].copy()
 
         if self.mode == "train":
-            # 1. 独立传感器边 Mask
-            if np.random.rand() < 0.6:
-                n_drop = np.random.randint(1, 6)
+            # 取原始物理值的副本, 增强在归一化前进行
+            s_tab_raw = self.raw_tab_cache[real_idx].copy()
+
+            # --- 1. Edge Dropout: 70% 概率随机遮断 3~8 条边 ---
+            if np.random.rand() < 0.7:
+                n_drop = np.random.randint(3, 9)
                 drop_edges = np.random.choice(NUM_BIPARTITE_EDGES, n_drop, replace=False)
                 s_cwt[drop_edges] = 0.0
-                s_tab[drop_edges] = 0.0
+                s_tab_raw[drop_edges] = 0.0
 
-            # 2. 受控时移 (仅影响 CWT 时序特征)
+            # --- 2. CWT 时序平移 (±5 点) ---
             if np.random.rand() < 0.7:
                 shift = np.random.randint(-TIME_SHIFT_MAX, TIME_SHIFT_MAX + 1)
                 if shift > 0:
@@ -257,19 +315,23 @@ class NDTDataset(Dataset):
                     s_cwt[:, :, :, :-sa] = s_cwt[:, :, :, sa:].copy()
                     s_cwt[:, :, :, -sa:] = 0
 
-            # 3. 独立边缩放尺度扰动 (仅影响能量类特征)
+            # --- 3. Tabular 物理微扰 (在原始物理值上操作) ---
+            # ToF 抖动: ±2 个采样点 (物理单位, 非标准差)
             if np.random.rand() < 0.8:
-                edge_scales = np.random.uniform(
-                    SCALE_RANGE[0], SCALE_RANGE[1], size=(NUM_BIPARTITE_EDGES, 1)
-                ).astype(np.float32)
-                s_cwt *= edge_scales[:, :, np.newaxis, np.newaxis]
-                # 只缩放能量列 (idx 2,3,4), 不影响互相关系数 (idx 0) 和 ToF (idx 1)
-                s_tab[:, 2:] *= edge_scales
+                s_tab_raw[:, 1] += np.random.uniform(-2.0, 2.0, size=(NUM_BIPARTITE_EDGES,))
 
-            # 4. 白噪声
+            # 能量缩放: 乘以 0.9~1.1 (在原始幅值上才有物理意义)
             if np.random.rand() < 0.8:
-                s_cwt += np.random.normal(0, NOISE_STD, s_cwt.shape).astype(np.float32)
-                s_tab += np.random.normal(0, NOISE_STD, s_tab.shape).astype(np.float32)
+                energy_scale = np.random.uniform(0.9, 1.1, size=(NUM_BIPARTITE_EDGES, 1))
+                s_tab_raw[:, 2:5] *= energy_scale
+                # CWT 同步缩放保持多模态一致性
+                s_cwt *= energy_scale[:, :, np.newaxis, np.newaxis]
+
+            # 增强完毕后再做 Z-score 归一化
+            s_tab = self._normalize_tab(s_tab_raw)
+        else:
+            # Val/Test: 直接读取预归一化的缓存
+            s_tab = self.tab_cache[real_idx].copy()
 
         coord = torch.from_numpy(self.coords[real_idx].copy())
         return torch.from_numpy(s_cwt), torch.from_numpy(s_tab), coord
