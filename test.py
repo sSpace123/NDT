@@ -2,10 +2,11 @@ import os
 import numpy as np
 import torch
 import argparse
-from config import SAVE_DIR, REGION_DIRS, denormalize_coord
+from config import SAVE_DIR, denormalize_coord
 from dataset import get_dataloaders
 from model import PINNDamageLocator
 from loss import GeometricPINNLoss
+from train import evaluate
 from vis import plot_localization_scatter, plot_attention_topology
 
 
@@ -38,36 +39,16 @@ def main():
     print(f"\nTest set: {len(test_loader.dataset)} samples "
           f"(× repeat={test_loader.dataset.repeat})")
 
-    loss_fn = GeometricPINNLoss()
-    all_preds, all_targets, all_attns = [], [], []
+    loss_fn = GeometricPINNLoss().to(device)
 
-    for x_cwt, x_tab, coords_norm in test_loader:
-        x_cwt = x_cwt.to(device)
-        x_tab = x_tab.to(device)
-        coords_norm = coords_norm.to(device)
+    # 复用 train.py 的 evaluate 函数, 避免逻辑重复
+    _, res = evaluate(model, test_loader, loss_fn, device)
 
-        reg_out, edge_attn = model(x_cwt, x_tab)
-
-        p_mm = denormalize_coord(reg_out.cpu().numpy())
-        t_mm = denormalize_coord(coords_norm.cpu().numpy())
-
-        all_preds.append(p_mm)
-        all_targets.append(t_mm)
-        all_attns.append(edge_attn.cpu().numpy())
-
-    if not all_preds:
-        print("No test samples found.")
-        return
-
-    all_preds = np.concatenate(all_preds)
-    all_targets = np.concatenate(all_targets)
-    all_attns = np.concatenate(all_attns)
-    errors = np.linalg.norm(all_preds - all_targets, axis=1)
-
-    mae = np.mean(errors)
-    rmse = np.sqrt(np.mean(errors ** 2))
-    sr10 = np.mean(errors < 10.0) * 100
-    sr20 = np.mean(errors < 20.0) * 100
+    mae, rmse = res['mae'], res['rmse']
+    sr10, sr20 = res['sr10'], res['sr20']
+    errors = res['errors']
+    all_preds, all_targets = res['preds'], res['targets']
+    all_attns = res['edge_attns']
 
     # ========== 打印结果 ==========
     print(f"\n{'='*55}")

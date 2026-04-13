@@ -4,10 +4,7 @@ import time
 import numpy as np
 import torch
 
-from config import (
-    SAVE_DIR, EPOCHS, LEARNING_RATE, LAMBDA_REG, LAMBDA_PHYS,
-    REGION_DIRS, denormalize_coord,
-)
+from config import SAVE_DIR, EPOCHS, LEARNING_RATE, denormalize_coord
 from dataset import get_dataloaders
 from model import PINNDamageLocator
 from loss import GeometricPINNLoss
@@ -16,7 +13,8 @@ from vis import plot_training_curves, plot_localization_scatter, plot_attention_
 
 def train_one_epoch(model, loader, optimizer, loss_fn, device):
     model.train()
-    total_loss, total_mse_mm, n = 0.0, 0.0, 0
+    total_loss, n = 0.0, 0
+    all_preds, all_targets = [], []
 
     for x_cwt, x_tab, coords_norm in loader:
         x_cwt = x_cwt.to(device)
@@ -31,14 +29,17 @@ def train_one_epoch(model, loader, optimizer, loss_fn, device):
         optimizer.step()
 
         with torch.no_grad():
-            p_mm = denormalize_coord(reg_out.cpu().numpy())
-            t_mm = denormalize_coord(coords_norm.cpu().numpy())
-            total_mse_mm += np.mean((p_mm - t_mm) ** 2)
+            all_preds.append(denormalize_coord(reg_out.cpu().numpy()))
+            all_targets.append(denormalize_coord(coords_norm.cpu().numpy()))
 
         total_loss += loss.item()
         n += 1
 
-    return total_loss / max(n, 1), np.sqrt(total_mse_mm / max(n, 1))
+    preds = np.concatenate(all_preds)
+    targets = np.concatenate(all_targets)
+    errors = np.linalg.norm(preds - targets, axis=1)
+    rmse = np.sqrt(np.mean(errors ** 2))
+    return total_loss / max(n, 1), rmse
 
 
 @torch.no_grad()

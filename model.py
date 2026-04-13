@@ -28,7 +28,7 @@ class EdgeCNN(nn.Module):
             nn.Conv2d(32, 64, 3, padding=1, stride=(2, 1)),          # freq: 16→8
             nn.BatchNorm2d(64), nn.ReLU(),
             nn.Conv2d(64, 64, (8, 1)),                                # freq: 8→1
-            nn.ReLU(),
+            nn.BatchNorm2d(64), nn.ReLU(),
         )
         # 1D 时间轴降维: 2048 → TIME_REDUCED_LEN (默认 128)
         self.time_pool = nn.AvgPool1d(kernel_size=_TIME_POOL_K,

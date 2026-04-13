@@ -94,6 +94,8 @@ def plot_attention_topology(edge_attns, bipartite_edges,
     G = nx.Graph()
     for idx, (x, y) in enumerate(SENSOR_COORDS):
         G.add_node(idx, pos=(x, y))
+    for u, v in bipartite_edges:
+        G.add_edge(u, v)
     pos = nx.get_node_attributes(G, 'pos')
 
     weights = np.array([float(edge_attns[i]) for i in range(len(bipartite_edges))])

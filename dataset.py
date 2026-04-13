@@ -112,7 +112,7 @@ def preprocess_pair(healthy_csv, damage_csv):
     try:
         cc = float(np.corrcoef(env_exc, env_resp)[0, 1]) if np.std(env_resp) > 0 else 0.0
         if np.isnan(cc): cc = 0.0
-    except:
+    except Exception:
         cc = 0.0
     tof = float(np.argmax(env_resp) - np.argmax(env_exc))
     tot_e = float(np.sum(diff_resp ** 2))
@@ -257,13 +257,14 @@ class NDTDataset(Dataset):
                     s_cwt[:, :, :, :-sa] = s_cwt[:, :, :, sa:].copy()
                     s_cwt[:, :, :, -sa:] = 0
 
-            # 3. 独立边缩放尺度扰动 (影响能量特征)
+            # 3. 独立边缩放尺度扰动 (仅影响能量类特征)
             if np.random.rand() < 0.8:
                 edge_scales = np.random.uniform(
                     SCALE_RANGE[0], SCALE_RANGE[1], size=(NUM_BIPARTITE_EDGES, 1)
                 ).astype(np.float32)
                 s_cwt *= edge_scales[:, :, np.newaxis, np.newaxis]
-                s_tab *= edge_scales  # 同时拉伸 Tabular 特征
+                # 只缩放能量列 (idx 2,3,4), 不影响互相关系数 (idx 0) 和 ToF (idx 1)
+                s_tab[:, 2:] *= edge_scales
 
             # 4. 白噪声
             if np.random.rand() < 0.8:
@@ -328,7 +329,6 @@ def build_splits(data_root=DATA_ROOT):
 
 def get_dataloaders(data_root=DATA_ROOT):
     train_ds, val_ds, test_ds = build_splits(data_root)
-    import torch
     pin = torch.cuda.is_available()
     return (
         DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, drop_last=True, pin_memory=pin),
